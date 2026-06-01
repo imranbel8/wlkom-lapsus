@@ -7,5 +7,6 @@ Pedagogical Linux rootkit as a kernel module + C2 attacking program.
 
 ### Rootkit
 ```bash
+./setup_vms.sh
 cd rootkit
 make
