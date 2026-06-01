@@ -1,0 +1,14 @@
+Script VMS explication :
+
+| Étape | Action |
+| 1     | Vérifie que KVM est supporté |
+| 2     | Installe toutes les dépendances (Arch ou Debian) |
+| 3     | Configure et démarre libvirtd |
+| 4     | Crée le réseau isolé `wlkom` avec bridge |
+| 5     | Crée les disques `.qcow2` (attaquant + victime) |
+| 6     | Télécharge l'ISO Debian |
+| 7     | Génère les scripts de lancement |
+| 8     | Génère les configs post-install pour chaque VM |
+| 9     | Affiche le résumé avec les prochaines étapes |
+
+
