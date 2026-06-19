@@ -65,9 +65,8 @@ install_deps() {
 
     if command -v pacman &>/dev/null; then
         log_info "Détecté : Arch Linux"
-        sudo pacman -Sy --noconfirm \
+        sudo pacman -S --needed --noconfirm \
             qemu-full \
-            virt-manager \
             libvirt \
             dnsmasq \
             wget \
@@ -78,7 +77,6 @@ install_deps() {
         sudo apt install -y \
             qemu-system-x86 \
             qemu-utils \
-            virt-manager \
             libvirt-daemon-system \
             libvirt-clients \
             dnsmasq \
@@ -253,7 +251,7 @@ qemu-system-x86_64 \\
     -drive file=${ATTACKER_DISK},format=qcow2 \\
     -cdrom ${ISO_PATH} \\
     -boot order=dc \\
-    -netdev bridge,id=net0,br=${BRIDGE_NAME} \\
+    -netdev user,id=net0,net=192.168.100.0/24,host=192.168.100.1,dhcpstart=192.168.100.10,hostfwd=tcp::2222-:22 \\
     -device virtio-net,netdev=net0 \\
     -vga virtio \\
     -display gtk
@@ -270,7 +268,7 @@ qemu-system-x86_64 \\
     -smp ${CPUS} \\
     -enable-kvm \\
     -drive file=${ATTACKER_DISK},format=qcow2 \\
-    -netdev bridge,id=net0,br=${BRIDGE_NAME} \\
+    -netdev user,id=net0,net=192.168.100.0/24,host=192.168.100.1,dhcpstart=192.168.100.10,hostfwd=tcp::2222-:22 \\
     -device virtio-net,netdev=net0 \\
     -vga virtio \\
     -display gtk
@@ -289,7 +287,7 @@ qemu-system-x86_64 \\
     -drive file=${VICTIM_DISK},format=qcow2 \\
     -cdrom ${ISO_PATH} \\
     -boot order=dc \\
-    -netdev bridge,id=net0,br=${BRIDGE_NAME} \\
+    -netdev user,id=net0,net=192.168.100.0/24,host=192.168.100.1,dhcpstart=192.168.100.20,hostfwd=tcp::2223-:22 \\
     -device virtio-net,netdev=net0 \\
     -vga virtio \\
     -display gtk
@@ -306,7 +304,7 @@ qemu-system-x86_64 \\
     -smp ${CPUS} \\
     -enable-kvm \\
     -drive file=${VICTIM_DISK},format=qcow2 \\
-    -netdev bridge,id=net0,br=${BRIDGE_NAME} \\
+    -netdev user,id=net0,net=192.168.100.0/24,host=192.168.100.1,dhcpstart=192.168.100.20,hostfwd=tcp::2223-:22 \\
     -device virtio-net,netdev=net0 \\
     -vga virtio \\
     -display gtk

