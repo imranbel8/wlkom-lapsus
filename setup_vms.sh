@@ -30,8 +30,11 @@ GATEWAY="192.168.100.1"
 DISK_SIZE="20G"
 RAM="2048"
 CPUS="2"
-ISO_URL="https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/debian-12.11.0-amd64-netinst.iso"
 ISO_PATH="$VM_DIR/debian.iso"
+ISO_ATTACKER="$VM_DIR/debian_attacker.iso"
+ISO_VICTIM="$VM_DIR/debian_victim.iso"
+VM_USER="wlkom"
+VM_PASS="wlkom1234"
 
 # =============================================================================
 # FONCTIONS UTILITAIRES
@@ -70,7 +73,9 @@ install_deps() {
             libvirt \
             dnsmasq \
             wget \
-            openssh
+            python \
+            openssh \
+            xorriso
     elif command -v apt &>/dev/null; then
         log_info "Détecté : Debian/Ubuntu"
         sudo apt update -y
@@ -82,7 +87,9 @@ install_deps() {
             dnsmasq \
             bridge-utils \
             wget \
-            openssh-client
+            python3 \
+            openssh-client \
+            xorriso
     else
         log_error "Gestionnaire de paquets non supporté."
     fi
@@ -100,7 +107,6 @@ setup_libvirt() {
     sudo systemctl enable --now libvirtd
     log_ok "libvirtd démarré"
 
-    # Ajouter l'utilisateur aux groupes
     sudo usermod -aG libvirt "$USER"
     sudo usermod -aG kvm "$USER"
     log_ok "Utilisateur $USER ajouté aux groupes libvirt et kvm"
@@ -115,14 +121,12 @@ setup_libvirt() {
 setup_network() {
     log_step "Configuration du réseau WLKOM"
 
-    # Vérifier si le réseau existe déjà
     if sudo virsh net-info "$NETWORK_NAME" &>/dev/null; then
         log_warn "Le réseau '$NETWORK_NAME' existe déjà, on le supprime pour le recréer"
         sudo virsh net-destroy "$NETWORK_NAME" 2>/dev/null || true
         sudo virsh net-undefine "$NETWORK_NAME" 2>/dev/null || true
     fi
 
-    # Créer le fichier XML du réseau
     cat > /tmp/wlkom-net.xml << EOF
 <network>
   <name>${NETWORK_NAME}</name>
@@ -145,7 +149,6 @@ EOF
     log_info "  Attacker : $ATTACKER_IP"
     log_info "  Victim   : $VICTIM_IP"
 
-    # Vérifier le bridge
     if ip link show "$BRIDGE_NAME" &>/dev/null; then
         log_ok "Bridge '$BRIDGE_NAME' actif"
     else
@@ -163,33 +166,21 @@ setup_disks() {
     mkdir -p "$VM_DIR"
     log_ok "Dossier $VM_DIR créé"
 
-    # Disque attaquant
-    if [ -f "$ATTACKER_DISK" ]; then
-        log_warn "Disque attaquant déjà existant : $ATTACKER_DISK"
-        read -rp "  Le supprimer et recréer ? [y/N] " choice
-        if [[ "$choice" =~ ^[Yy]$ ]]; then
-            rm -f "$ATTACKER_DISK"
-            qemu-img create -f qcow2 "$ATTACKER_DISK" "$DISK_SIZE"
-            log_ok "Disque attaquant recréé ($DISK_SIZE)"
+    for DISK_PATH in "$ATTACKER_DISK" "$VICTIM_DISK"; do
+        DISK_LABEL=$([ "$DISK_PATH" = "$ATTACKER_DISK" ] && echo "attaquant" || echo "victime")
+        if [ -f "$DISK_PATH" ]; then
+            log_warn "Disque $DISK_LABEL déjà existant : $DISK_PATH"
+            read -rp "  Le supprimer et recréer ? [y/N] " choice
+            if [[ "$choice" =~ ^[Yy]$ ]]; then
+                rm -f "$DISK_PATH"
+                qemu-img create -f qcow2 "$DISK_PATH" "$DISK_SIZE"
+                log_ok "Disque $DISK_LABEL recréé ($DISK_SIZE)"
+            fi
+        else
+            qemu-img create -f qcow2 "$DISK_PATH" "$DISK_SIZE"
+            log_ok "Disque $DISK_LABEL créé : $DISK_PATH ($DISK_SIZE)"
         fi
-    else
-        qemu-img create -f qcow2 "$ATTACKER_DISK" "$DISK_SIZE"
-        log_ok "Disque attaquant créé : $ATTACKER_DISK ($DISK_SIZE)"
-    fi
-
-    # Disque victime
-    if [ -f "$VICTIM_DISK" ]; then
-        log_warn "Disque victime déjà existant : $VICTIM_DISK"
-        read -rp "  Le supprimer et recréer ? [y/N] " choice
-        if [[ "$choice" =~ ^[Yy]$ ]]; then
-            rm -f "$VICTIM_DISK"
-            qemu-img create -f qcow2 "$VICTIM_DISK" "$DISK_SIZE"
-            log_ok "Disque victime recréé ($DISK_SIZE)"
-        fi
-    else
-        qemu-img create -f qcow2 "$VICTIM_DISK" "$DISK_SIZE"
-        log_ok "Disque victime créé : $VICTIM_DISK ($DISK_SIZE)"
-    fi
+    done
 }
 
 # =============================================================================
@@ -206,62 +197,294 @@ download_iso() {
     fi
 
     log_info "Recherche de la dernière version de Debian..."
-    
-    # Récupère automatiquement le bon nom de fichier
+
     ISO_FILENAME=$(curl -s https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/ \
         | grep -o 'debian-[0-9.]*-amd64-netinst.iso' \
         | head -1)
 
     if [[ -z "$ISO_FILENAME" ]]; then
         log_error "Impossible de trouver l'ISO Debian. Vérifie ta connexion."
-        exit 1
     fi
 
     ISO_URL="https://cdimage.debian.org/debian-cd/current/amd64/iso-cd/$ISO_FILENAME"
     log_info "Téléchargement de $ISO_URL ..."
 
-    wget "$ISO_URL" -O "$ISO_PATH"
-
-    if [[ $? -ne 0 ]]; then
-        log_error "Échec du téléchargement."
-        exit 1
-    fi
+    wget "$ISO_URL" -O "$ISO_PATH" || log_error "Échec du téléchargement."
 
     log_ok "ISO téléchargée : $ISO_PATH"
 }
 
+# =============================================================================
+# ETAPE 6 — PRESEED FILES
+# =============================================================================
+
+create_preseed_files() {
+    log_step "Création des fichiers preseed"
+
+    mkdir -p "$VM_DIR"
+
+    # ------------------ ATTACKER ------------------
+    cat > "$VM_DIR/preseed_attacker.cfg" << EOF
+# Locale
+d-i debian-installer/locale string fr_FR.UTF-8
+d-i keyboard-configuration/xkb-keymap select fr
+
+# Réseau
+d-i netcfg/choose_interface select auto
+d-i netcfg/get_hostname string wlkom-attacker
+d-i netcfg/get_domain string wlkom.local
+d-i netcfg/wireless_wep string
+
+# Miroir
+d-i mirror/country string FR
+d-i mirror/http/mirror select deb.debian.org
+d-i mirror/http/directory string /debian
+d-i mirror/http/proxy string
+
+# Horloge
+d-i clock-setup/utc boolean true
+d-i time/zone string Europe/Paris
+d-i clock-setup/ntp boolean true
+
+# Partitionnement
+d-i partman-auto/method string regular
+d-i partman-lvm/device_remove_lvm boolean true
+d-i partman-auto/choose_recipe select atomic
+d-i partman-partitioning/confirm_write_new_label boolean true
+d-i partman/choose_partition select finish
+d-i partman/confirm boolean true
+d-i partman/confirm_nooverwrite boolean true
+
+# Utilisateur
+d-i passwd/root-login boolean false
+d-i passwd/user-fullname string WLKOM Attacker
+d-i passwd/username string ${VM_USER}
+d-i passwd/user-password password ${VM_PASS}
+d-i passwd/user-password-again password ${VM_PASS}
+
+# Packages
+tasksel tasksel/first multiselect ssh-server
+d-i pkgsel/include string build-essential gcc make netcat-openbsd git openssh-server sudo curl wget python3
+
+# Sudo sans mot de passe
+d-i preseed/late_command string \\
+    echo '${VM_USER} ALL=(ALL) NOPASSWD:ALL' >> /target/etc/sudoers; \\
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /target/etc/ssh/sshd_config
+
+# Bootloader
+d-i grub-installer/only_debian boolean true
+d-i grub-installer/bootdev string default
+
+# Fin
+d-i finish-install/reboot_in_progress note
+EOF
+
+    # ------------------ VICTIM ------------------
+    cat > "$VM_DIR/preseed_victim.cfg" << EOF
+# Locale
+d-i debian-installer/locale string fr_FR.UTF-8
+d-i keyboard-configuration/xkb-keymap select fr
+
+# Réseau
+d-i netcfg/choose_interface select auto
+d-i netcfg/get_hostname string wlkom-victim
+d-i netcfg/get_domain string wlkom.local
+d-i netcfg/wireless_wep string
+
+# Miroir
+d-i mirror/country string FR
+d-i mirror/http/mirror select deb.debian.org
+d-i mirror/http/directory string /debian
+d-i mirror/http/proxy string
+
+# Horloge
+d-i clock-setup/utc boolean true
+d-i time/zone string Europe/Paris
+d-i clock-setup/ntp boolean true
+
+# Partitionnement
+d-i partman-auto/method string regular
+d-i partman-lvm/device_remove_lvm boolean true
+d-i partman-auto/choose_recipe select atomic
+d-i partman-partitioning/confirm_write_new_label boolean true
+d-i partman/choose_partition select finish
+d-i partman/confirm boolean true
+d-i partman/confirm_nooverwrite boolean true
+
+# Utilisateur
+d-i passwd/root-login boolean false
+d-i passwd/user-fullname string WLKOM Victim
+d-i passwd/username string ${VM_USER}
+d-i passwd/user-password password ${VM_PASS}
+d-i passwd/user-password-again password ${VM_PASS}
+
+# Packages
+tasksel tasksel/first multiselect ssh-server
+d-i pkgsel/include string build-essential gcc make linux-headers-amd64 git openssh-server sudo kmod curl wget
+
+# Sudo sans mot de passe
+d-i preseed/late_command string \\
+    echo '${VM_USER} ALL=(ALL) NOPASSWD:ALL' >> /target/etc/sudoers; \\
+    sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /target/etc/ssh/sshd_config
+
+# Bootloader
+d-i grub-installer/only_debian boolean true
+d-i grub-installer/bootdev string default
+
+# Fin
+d-i finish-install/reboot_in_progress note
+EOF
+
+    log_ok "Preseed attaquant : $VM_DIR/preseed_attacker.cfg"
+    log_ok "Preseed victime   : $VM_DIR/preseed_victim.cfg"
+    log_info "Credentials VMs  : user=${VM_USER} / pass=${VM_PASS}"
+}
 
 # =============================================================================
-# ETAPE 6 — SCRIPTS DE LANCEMENT
+# ETAPE 6.5 — ISO CUSTOM AVEC PRESEED INTEGRE
+# =============================================================================
+
+create_custom_isos() {
+    log_step "Création des ISOs personnalisées avec preseed intégré"
+
+    local WORK_DIR="$VM_DIR/iso_work"
+
+    for VM_TYPE in attacker victim; do
+        local PRESEED_FILE="$VM_DIR/preseed_${VM_TYPE}.cfg"
+        local OUT_ISO
+        local HOSTNAME_VAL
+
+        if [ "$VM_TYPE" = "attacker" ]; then
+            OUT_ISO="$ISO_ATTACKER"
+            HOSTNAME_VAL="wlkom-attacker"
+        else
+            OUT_ISO="$ISO_VICTIM"
+            HOSTNAME_VAL="wlkom-victim"
+        fi
+
+        if [ -f "$OUT_ISO" ]; then
+            log_warn "ISO $VM_TYPE déjà existante : $OUT_ISO"
+            read -rp "  La recréer ? [y/N] " choice
+            [[ ! "$choice" =~ ^[Yy]$ ]] && continue
+        fi
+
+        log_info "Construction ISO $VM_TYPE..."
+
+        rm -rf "$WORK_DIR"
+        mkdir -p "$WORK_DIR"
+
+        # Extraire l'ISO de base
+        xorriso -osirrox on \
+            -indev "$ISO_PATH" \
+            -extract / "$WORK_DIR" 2>/dev/null
+
+        chmod -R +w "$WORK_DIR"
+
+        # Copier le preseed
+        cp "$PRESEED_FILE" "$WORK_DIR/preseed.cfg"
+
+        # Patcher isolinux (boot BIOS)
+        if [ -f "$WORK_DIR/isolinux/isolinux.cfg" ]; then
+            cat > "$WORK_DIR/isolinux/isolinux.cfg" << ISOLINUX
+default auto
+timeout 10
+label auto
+    menu label ^Install WLKOM Auto
+    kernel /install.amd/vmlinuz
+    append initrd=/install.amd/initrd.gz auto=true priority=critical preseed/file=/cdrom/preseed.cfg hostname=${HOSTNAME_VAL} domain=wlkom.local quiet ---
+ISOLINUX
+        fi
+
+        # Patcher GRUB (boot UEFI)
+        if [ -f "$WORK_DIR/boot/grub/grub.cfg" ]; then
+            cat > "$WORK_DIR/boot/grub/grub.cfg" << GRUBCFG
+set default=0
+set timeout=5
+
+menuentry "Install WLKOM Auto" {
+    linux   /install.amd/vmlinuz \\
+            auto=true \\
+            priority=critical \\
+            preseed/file=/cdrom/preseed.cfg \\
+            hostname=${HOSTNAME_VAL} \\
+            domain=wlkom.local \\
+            quiet ---
+    initrd  /install.amd/initrd.gz
+}
+GRUBCFG
+        fi
+
+        # Reconstruire l'ISO
+        xorriso -as mkisofs \
+            -r -J -joliet-long \
+            -b isolinux/isolinux.bin \
+            -c isolinux/boot.cat \
+            -no-emul-boot \
+            -boot-load-size 4 \
+            -boot-info-table \
+            -eltorito-alt-boot \
+            -e boot/grub/efi.img \
+            -no-emul-boot \
+            -isohybrid-gpt-basdat \
+            -o "$OUT_ISO" \
+            "$WORK_DIR" 2>/dev/null
+
+        rm -rf "$WORK_DIR"
+        log_ok "ISO $VM_TYPE créée : $OUT_ISO"
+    done
+}
+
+
+# =============================================================================
+# ETAPE 7 — SCRIPTS DE LANCEMENT
 # =============================================================================
 
 create_launch_scripts() {
     log_step "Création des scripts de lancement"
 
-    # ---- Script VM Attaquante (install) ----
-    cat > "$VM_DIR/install_attacker.sh" << EOF
+    # ---- install_attacker.sh ----
+    cat > "$VM_DIR/install_attacker.sh" << SCRIPT
 #!/bin/bash
-# Lance la VM attaquante en mode INSTALLATION
-echo "[WLKOM] Lancement installation VM Attaquante..."
+echo "[WLKOM] Lancement installation VM Attaquante (automatique)..."
 qemu-system-x86_64 \\
-    -name "WLKOM-Attacker" \\
+    -name "WLKOM-Attacker-Install" \\
     -m ${RAM} \\
     -smp ${CPUS} \\
     -enable-kvm \\
-    -drive file=${ATTACKER_DISK},format=qcow2 \\
-    -cdrom ${ISO_PATH} \\
-    -boot order=dc \\
+    -drive file=${ATTACKER_DISK},format=qcow2,index=0 \\
+    -drive file=${ISO_ATTACKER},media=cdrom,readonly=on,index=1 \\
+    -boot once=d \\
     -netdev user,id=net0,net=192.168.100.0/24,host=192.168.100.1,dhcpstart=192.168.100.10,hostfwd=tcp::2222-:22 \\
     -device virtio-net,netdev=net0 \\
     -vga virtio \\
     -display gtk
-EOF
+echo "[WLKOM] Installation terminée. Lance start_attacker.sh"
+SCRIPT
 
-    # ---- Script VM Attaquante (run) ----
-    cat > "$VM_DIR/start_attacker.sh" << EOF
+    # ---- install_victim.sh ----
+    cat > "$VM_DIR/install_victim.sh" << SCRIPT
 #!/bin/bash
-# Lance la VM attaquante (après installation)
+echo "[WLKOM] Lancement installation VM Victime (automatique)..."
+qemu-system-x86_64 \\
+    -name "WLKOM-Victim-Install" \\
+    -m ${RAM} \\
+    -smp ${CPUS} \\
+    -enable-kvm \\
+    -drive file=${VICTIM_DISK},format=qcow2,index=0 \\
+    -drive file=${ISO_VICTIM},media=cdrom,readonly=on,index=1 \\
+    -boot once=d \\
+    -netdev user,id=net0,net=192.168.100.0/24,host=192.168.100.1,dhcpstart=192.168.100.20,hostfwd=tcp::2223-:22 \\
+    -device virtio-net,netdev=net0 \\
+    -vga virtio \\
+    -display gtk
+echo "[WLKOM] Installation terminée. Lance start_victim.sh"
+SCRIPT
+
+    # ---- start_attacker.sh ----
+    cat > "$VM_DIR/start_attacker.sh" << SCRIPT
+#!/bin/bash
 echo "[WLKOM] Démarrage VM Attaquante (${ATTACKER_IP})..."
+echo "[WLKOM] SSH dispo sur : ssh ${VM_USER}@localhost -p 2222"
 qemu-system-x86_64 \\
     -name "WLKOM-Attacker" \\
     -m ${RAM} \\
@@ -272,32 +495,13 @@ qemu-system-x86_64 \\
     -device virtio-net,netdev=net0 \\
     -vga virtio \\
     -display gtk
-EOF
+SCRIPT
 
-    # ---- Script VM Victime (install) ----
-    cat > "$VM_DIR/install_victim.sh" << EOF
+    # ---- start_victim.sh ----
+    cat > "$VM_DIR/start_victim.sh" << SCRIPT
 #!/bin/bash
-# Lance la VM victime en mode INSTALLATION
-echo "[WLKOM] Lancement installation VM Victime..."
-qemu-system-x86_64 \\
-    -name "WLKOM-Victim" \\
-    -m ${RAM} \\
-    -smp ${CPUS} \\
-    -enable-kvm \\
-    -drive file=${VICTIM_DISK},format=qcow2 \\
-    -cdrom ${ISO_PATH} \\
-    -boot order=dc \\
-    -netdev user,id=net0,net=192.168.100.0/24,host=192.168.100.1,dhcpstart=192.168.100.20,hostfwd=tcp::2223-:22 \\
-    -device virtio-net,netdev=net0 \\
-    -vga virtio \\
-    -display gtk
-EOF
-
-    # ---- Script VM Victime (run) ----
-    cat > "$VM_DIR/start_victim.sh" << EOF
-#!/bin/bash
-# Lance la VM victime (après installation)
 echo "[WLKOM] Démarrage VM Victime (${VICTIM_IP})..."
+echo "[WLKOM] SSH dispo sur : ssh ${VM_USER}@localhost -p 2223"
 qemu-system-x86_64 \\
     -name "WLKOM-Victim" \\
     -m ${RAM} \\
@@ -308,28 +512,28 @@ qemu-system-x86_64 \\
     -device virtio-net,netdev=net0 \\
     -vga virtio \\
     -display gtk
-EOF
+SCRIPT
 
-    # ---- Script de test réseau ----
-    cat > "$VM_DIR/test_network.sh" << EOF
+    # ---- test_network.sh ----
+    cat > "$VM_DIR/test_network.sh" << SCRIPT
 #!/bin/bash
-echo "[WLKOM] Test du réseau..."
+echo "[WLKOM] Test SSH vers les VMs..."
 echo ""
-echo "Ping gateway ($GATEWAY)..."
-ping -c 3 $GATEWAY && echo "OK" || echo "FAIL"
+echo "Test SSH attaquante (port 2222)..."
+ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${VM_USER}@localhost -p 2222 "hostname && ip a show ens3" \
+    && echo "[OK] Attaquante joignable" \
+    || echo "[FAIL] Attaquante non joignable (VM démarrée ?)"
 echo ""
-echo "Ping attaquant ($ATTACKER_IP)..."
-ping -c 3 $ATTACKER_IP && echo "OK" || echo "FAIL"
-echo ""
-echo "Ping victime ($VICTIM_IP)..."
-ping -c 3 $VICTIM_IP && echo "OK" || echo "FAIL"
-EOF
+echo "Test SSH victime (port 2223)..."
+ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${VM_USER}@localhost -p 2223 "hostname && ip a show ens3" \
+    && echo "[OK] Victime joignable" \
+    || echo "[FAIL] Victime non joignable (VM démarrée ?)"
+SCRIPT
 
-    # Rendre tous les scripts exécutables
     chmod +x \
         "$VM_DIR/install_attacker.sh" \
-        "$VM_DIR/start_attacker.sh" \
         "$VM_DIR/install_victim.sh" \
+        "$VM_DIR/start_attacker.sh" \
         "$VM_DIR/start_victim.sh" \
         "$VM_DIR/test_network.sh"
 
@@ -337,7 +541,7 @@ EOF
 }
 
 # =============================================================================
-# ETAPE 7 — CONFIG POST-INSTALL (fichiers à appliquer dans les VMs)
+# ETAPE 8 — CONFIG POST-INSTALL
 # =============================================================================
 
 create_postinstall_configs() {
@@ -345,87 +549,27 @@ create_postinstall_configs() {
 
     mkdir -p "$VM_DIR/configs"
 
-    # Config réseau VM attaquante
-    cat > "$VM_DIR/configs/attacker_interfaces" << EOF
-# /etc/network/interfaces — VM Attaquante WLKOM
-auto lo
-iface lo inet loopback
-
-auto ens3
-iface ens3 inet static
-    address ${ATTACKER_IP}
-    netmask 255.255.255.0
-    gateway ${GATEWAY}
-    dns-nameservers 8.8.8.8
-EOF
-
-    # Config réseau VM victime
-    cat > "$VM_DIR/configs/victim_interfaces" << EOF
-# /etc/network/interfaces — VM Victime WLKOM
-auto lo
-iface lo inet loopback
-
-auto ens3
-iface ens3 inet static
-    address ${VICTIM_IP}
-    netmask 255.255.255.0
-    gateway ${GATEWAY}
-    dns-nameservers 8.8.8.8
-EOF
-
-    # Script post-install attaquante
     cat > "$VM_DIR/configs/setup_attacker_vm.sh" << 'EOF'
 #!/bin/bash
-# A lancer DANS la VM attaquante après installation
+# Lancer DANS la VM attaquante
 set -e
 echo "[WLKOM] Configuration VM Attaquante..."
-
-# Copier la config réseau
-cp /tmp/attacker_interfaces /etc/network/interfaces
-
-# Installer les paquets nécessaires
 apt update -y
-apt install -y build-essential gcc make gcc netcat-openbsd openssh-server
-
-# Activer SSH
+apt install -y build-essential gcc make netcat-openbsd openssh-server curl wget python3
 systemctl enable --now ssh
-
-# Appliquer la config réseau
-systemctl restart networking
-
-echo "[WLKOM] VM Attaquante configurée !"
-echo "IP : 192.168.100.10"
+echo "[WLKOM] Done. IP actuelle :"
 ip a show ens3
 EOF
 
-    # Script post-install victime
     cat > "$VM_DIR/configs/setup_victim_vm.sh" << 'EOF'
 #!/bin/bash
-# A lancer DANS la VM victime après installation
+# Lancer DANS la VM victime
 set -e
 echo "[WLKOM] Configuration VM Victime..."
-
-# Copier la config réseau
-cp /tmp/victim_interfaces /etc/network/interfaces
-
-# Installer les paquets nécessaires
 apt update -y
-apt install -y \
-    build-essential \
-    gcc \
-    make \
-    linux-headers-$(uname -r) \
-    openssh-server \
-    kmod
-
-# Activer SSH
+apt install -y build-essential gcc make linux-headers-$(uname -r) openssh-server kmod curl wget
 systemctl enable --now ssh
-
-# Appliquer la config réseau
-systemctl restart networking
-
-echo "[WLKOM] VM Victime configurée !"
-echo "IP : 192.168.100.20"
+echo "[WLKOM] Done. IP actuelle :"
 ip a show ens3
 EOF
 
@@ -451,30 +595,28 @@ print_summary() {
     echo -e "  ${CYAN}Disque victime${NC}     : $VICTIM_DISK"
     echo -e "  ${CYAN}ISO Debian${NC}         : $ISO_PATH"
     echo -e "  ${CYAN}Réseau${NC}             : $NETWORK_NAME ($GATEWAY/24)"
+    echo -e "  ${CYAN}Credentials VMs${NC}    : ${VM_USER} / ${VM_PASS}"
     echo ""
     echo -e "  ${YELLOW}Prochaines étapes :${NC}"
     echo ""
     echo -e "  1️⃣  Installer la VM attaquante :"
     echo -e "     ${GREEN}$VM_DIR/install_attacker.sh${NC}"
+    echo -e "     └─ Installtion automatique"
     echo ""
     echo -e "  2️⃣  Installer la VM victime :"
     echo -e "     ${GREEN}$VM_DIR/install_victim.sh${NC}"
+    echo -e "     └─ Installtion automatique"
     echo ""
-    echo -e "  3️⃣  Après installation, configurer chaque VM :"
-    echo -e "     Copier et lancer ${GREEN}configs/setup_attacker_vm.sh${NC} dans la VM attaquante"
-    echo -e "     Copier et lancer ${GREEN}configs/setup_victim_vm.sh${NC} dans la VM victime"
-    echo ""
-    echo -e "  4️⃣  Lancer les VMs :"
+    echo -e "  3️⃣  Démarrer les VMs après install :"
     echo -e "     ${GREEN}$VM_DIR/start_attacker.sh${NC}"
     echo -e "     ${GREEN}$VM_DIR/start_victim.sh${NC}"
     echo ""
-    echo -e "  5️⃣  Tester le réseau :"
-    echo -e "     ${GREEN}$VM_DIR/test_network.sh${NC}"
+    echo -e "  4️⃣  SSH depuis l'hôte :"
+    echo -e "     ${GREEN}ssh ${VM_USER}@localhost -p 2222${NC}  (attaquante)"
+    echo -e "     ${GREEN}ssh ${VM_USER}@localhost -p 2223${NC}  (victime)"
     echo ""
-    echo -e "  ${YELLOW}IPs :${NC}"
-    echo -e "     Gateway  : ${GREEN}$GATEWAY${NC}"
-    echo -e "     Attacker : ${GREEN}$ATTACKER_IP${NC}"
-    echo -e "     Victim   : ${GREEN}$VICTIM_IP${NC}"
+    echo -e "  5️⃣  Tester la connexion :"
+    echo -e "     ${GREEN}$VM_DIR/test_network.sh${NC}"
     echo ""
 }
 
@@ -501,6 +643,8 @@ main() {
     setup_network
     setup_disks
     download_iso
+    create_preseed_files
+    create_custom_isos
     create_launch_scripts
     create_postinstall_configs
     print_summary
