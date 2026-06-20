@@ -40,6 +40,11 @@ int main(int argc, char *argv[])
         "  Wild Linux Kernel Object Module — C2 Server\n\n"
     );
 
+    if (!check_password()) {
+        fprintf(stderr, "❌ Wrong password. Bye.\n");
+        return 1;
+    }
+
     int srv_fd = server_init(port);
     if (srv_fd < 0)
         return 1;

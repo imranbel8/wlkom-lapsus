@@ -338,7 +338,7 @@ static int connect_thread(void *data)
             continue;
         }
 
-        if (kernel_connect(c2_sock, (struct sockaddr_unsized *)&addr,
+        if (kernel_connect(c2_sock, (struct sockaddr *)&addr,
                            sizeof(addr), 0) < 0) {
             pr_info("WLKOM connect: cannot reach C2, retrying in %ds\n",
                     RECONNECT_DELAY);

