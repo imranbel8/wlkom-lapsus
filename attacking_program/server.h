@@ -6,7 +6,7 @@
 #include <stddef.h>
 
 /* Must match rootkit */
-#define WLKOM_PASSWORD  "zop3p_v6fub3w"
+#define WLKOM_PASSWORD  "zon3p_v6fu6w"
 #define CRYPTO_KEY      "wlk0m_xor_k3y_32bytes_padding__"
 #define CRYPTO_KEYLEN   32
 

