@@ -1,1 +1,9 @@
-dsfsfsdfsdfsdfsdf
+TODO List :
+
+- (Done) Creating automatic script for launching VMs
+- (Done) Creating all files needed for the repos rootkit/ and attacking_program/
+- (Done) Checking VMs + script launching
+- (Done) Creating deploy.sh script to make easy the deployment
+- Check the connection to the module on attacking machine
+- Test commands
+- Send
