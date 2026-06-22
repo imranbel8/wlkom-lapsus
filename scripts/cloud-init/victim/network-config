@@ -1,0 +1,9 @@
+version: 2
+ethernets:
+  ens3:
+    # NAT interface — DHCP from QEMU, gives Internet access and SSH port-forward
+    dhcp4: true
+  ens4:
+    # Private interface — static IP, used by the rootkit to connect back to C2
+    addresses:
+      - __VM_IP__/24

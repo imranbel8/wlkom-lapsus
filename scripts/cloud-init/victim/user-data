@@ -1,0 +1,39 @@
+#cloud-config
+# Victim VM — first-boot configuration via cloud-init.
+# Placeholders (__VAR__) are replaced by setup_victim.sh using sed.
+
+hostname: wlkom-victim
+
+users:
+  - name: __VM_USER__
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    groups: sudo
+    lock_passwd: false
+
+ssh_pwauth: true
+
+chpasswd:
+  expire: false
+  users:
+    - name: __VM_USER__
+      password: __VM_PASS__
+      type: text
+
+packages:
+  - build-essential
+  - gcc
+  - make
+  - linux-headers-amd64
+  - git
+  - openssh-server
+  - kmod
+  - curl
+  - wget
+
+package_update: true
+package_upgrade: false
+
+runcmd:
+  - systemctl enable ssh
+  - systemctl start ssh

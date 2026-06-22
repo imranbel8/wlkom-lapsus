@@ -1,0 +1,40 @@
+#cloud-config
+# Attacker VM — first-boot configuration via cloud-init.
+# Placeholders (__VAR__) are replaced by setup_attacker.sh using sed.
+
+hostname: wlkom-attacker
+
+users:
+  - name: __VM_USER__
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    groups: sudo
+    lock_passwd: false
+
+# Allow SSH password authentication (needed since we don't inject SSH keys here)
+ssh_pwauth: true
+
+chpasswd:
+  expire: false
+  users:
+    - name: __VM_USER__
+      password: __VM_PASS__
+      type: text
+
+packages:
+  - build-essential
+  - gcc
+  - make
+  - netcat-openbsd
+  - git
+  - openssh-server
+  - curl
+  - wget
+  - python3
+
+package_update: true
+package_upgrade: false
+
+runcmd:
+  - systemctl enable ssh
+  - systemctl start ssh
