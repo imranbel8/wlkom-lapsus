@@ -6,6 +6,8 @@ ccflags-y := -Wno-declaration-after-statement \
 	         -Wno-error=incompatible-pointer-types \
 	         -Wno-incompatible-pointer-types
 
+ccflags-y += -DCONFIG_X86_64
+
 KDIR := /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)
 

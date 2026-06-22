@@ -1,7 +1,7 @@
 #ifndef CONNECT_H
 #define CONNECT_H
 
-#define WLKOM_PASSWORD  "wlk0m_s3cr3t"
+#define WLKOM_PASSWORD  "zon3p_v6fu6w"
 #define RECONNECT_DELAY  5  // seconds between reconnection attempts
 
 // Commands opcodes (1 byte)

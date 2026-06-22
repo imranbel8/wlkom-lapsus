@@ -4,6 +4,8 @@ TODO List :
 - (Done) Creating all files needed for the repos rootkit/ and attacking_program/
 - (Done) Checking VMs + script launching
 - (Done) Creating deploy.sh script to make easy the deployment
-- Check the connection to the module on attacking machine
-- Test commands
+- (Done) Check the connection to the module on attacking machine
+- (Done) Working rootkit / C2
+- (Done) Test commands
+- Test on another computer
 - Send
