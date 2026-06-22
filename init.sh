@@ -18,11 +18,15 @@ SCRIPTS_DIR="$ROOT_DIR/scripts"
 CLOUD_BASE="$VM_DIR/debian-12-cloud-base.qcow2"
 
 check_root() {
-    [ "$EUID" -eq 0 ] && log_error "Do not run as root. sudo is used internally where needed."
+    if [ "$EUID" -eq 0 ]; then
+        log_error "Do not run as root. sudo is used internally where needed."
+    fi
 }
 
 check_kvm() {
-    grep -qE 'vmx|svm' /proc/cpuinfo || log_error "KVM not supported on this CPU."
+    if ! grep -qE 'vmx|svm' /proc/cpuinfo; then
+        log_error "KVM not supported on this CPU."
+    fi
     log_ok "KVM supported"
 }
 

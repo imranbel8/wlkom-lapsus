@@ -1,4 +1,4 @@
-#include "server.h"
+#include "../include/server.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -10,7 +10,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "commands.h"
+#include "../include/commands.h"
 
 #define PASS_SHIFT 3
 #define ALPHA_SIZE 26

@@ -173,5 +173,7 @@ Procedure :
 Commencer par : ETAPE 1
 
 
-# Mes notes 
-1) setup vms : ok, but do not call setup attacker and victim... 
+# Mes notes
+1) setup vms : ok, but do not call setup attacker and victim... OK But need to verify and understand how persistance is performed. 
+2) rootkit/src/main.c : renommer les params kernel c2_ip -> control_ip et c2_port -> control_port
+   + mettre a jour deploy.sh et scripts/templates/wlkom.service en meme temps

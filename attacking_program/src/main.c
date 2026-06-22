@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "server.h"
+#include "../include/server.h"
 
 #define MIN_PORT        1
 #define MAX_PORT        65535

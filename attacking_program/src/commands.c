@@ -4,8 +4,8 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "commands.h"
-#include "server.h"
+#include "../include/commands.h"
+#include "../include/server.h"
 
 #define MAX_ARGS 8
 #define CMD_LINE_SIZE 1024

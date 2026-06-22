@@ -2,7 +2,7 @@ CC      ?= cc
 CFLAGS  = -std=c99 -pedantic -Werror -Wall -Wextra -Wvla -O2
 LDLIBS  = -lcriterion
 
-TARGET  = wlkom_c2
+TARGET  = wlkom_control
 SRCS    = src/main.c src/server.c src/commands.c
 OBJS    = $(SRCS:.c=.o)
 

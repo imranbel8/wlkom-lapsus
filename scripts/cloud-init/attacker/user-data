@@ -4,6 +4,13 @@
 
 hostname: wlkom-attacker
 
+locale: fr_FR.UTF-8
+timezone: Europe/Paris
+
+keyboard:
+  layout: fr
+  variant: ""
+
 users:
   - name: __VM_USER__
     sudo: ALL=(ALL) NOPASSWD:ALL
@@ -15,11 +22,9 @@ users:
 ssh_pwauth: true
 
 chpasswd:
+  list: |
+    __VM_USER__:__VM_PASS__
   expire: false
-  users:
-    - name: __VM_USER__
-      password: __VM_PASS__
-      type: text
 
 packages:
   - build-essential
