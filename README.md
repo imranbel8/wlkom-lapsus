@@ -66,10 +66,10 @@ cat scripts/.env
 bash init.sh
 
 # 4. Start the attacker VM FIRST (it opens the socket the victim connects to)
-bash vms/start_attacker.sh   # Terminal 1
+bash vms/start_vm.sh attacker   # Terminal 1
 
 # 5. Start the victim VM
-bash vms/start_victim.sh     # Terminal 2
+bash vms/start_vm.sh victim     # Terminal 2
 # Cloud-init configures each VM on first boot (~2 min). Subsequent boots are instant.
 
 # 6. Deploy: compile + transfer + load the rootkit
@@ -124,8 +124,8 @@ After this step, `vms/` contains everything needed to start the VMs.
 connects to. Starting the victim first causes it to fail with "connection refused".
 
 ```bash
-bash vms/start_attacker.sh   # Terminal 1 — wait for the QEMU window to appear
-bash vms/start_victim.sh     # Terminal 2
+bash vms/start_vm.sh attacker   # Terminal 1 — wait for the QEMU window to appear
+bash vms/start_vm.sh victim     # Terminal 2
 ```
 
 On **first boot**, cloud-init configures each VM (~2 min): creates the user, sets

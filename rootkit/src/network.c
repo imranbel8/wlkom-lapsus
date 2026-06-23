@@ -33,7 +33,7 @@ static void run_packet_loop(conn_ctx_t *ctx)
         payload     = NULL;
         payload_len = 0;
         ret         = recv_packet(ctx, &opcode, &payload, &payload_len);
-        if (ret <= 0)
+        if (ret < 0)
         {
             pr_warn("WLKOM network: disconnected, reconnecting...\n");
             kfree(payload);
@@ -103,7 +103,6 @@ static int connect_thread(void *data)
         ctx.sock   = control_sock;
         ctx.authed = false;
         pr_info("WLKOM network: connected to %s:%d\n", control_ip, control_port);
-        send_packet(&ctx, CMD_PING, NULL, 0);
         run_packet_loop(&ctx);
         if (control_sock)
         {

@@ -1,9 +1,21 @@
-TODO List :
+TODO List (Reste à faire):
 
-- (Done) Creating automatic script for launching VMs
-- (Done) Creating all files needed for the repos rootkit/ and attacking_program/
-- (Done) Checking VMs + script launching
-- (Done) Creating deploy.sh script to make easy the deployment
-- Check the connection to the module on attacking machine
-- Test commands
-- Send
+[] Améliorer le script de lancement et faire plus d'automatisation.
+[] Documenter un peu mieux ?
+[] Tester les fonctionnalités :
+    _auth and connect : OK
+    _exec : OK
+    _download : KO
+    _ping : OK
+    _help: OK
+    _exit: Closes the connection but do not end process. 
+    _upload : NOT TESTED
+    _download : NOT TESTED
+    _hide_file : NOT TESTED
+    _unhide_file : NOT TESTED
+    _hide_line : NOT TESTED
+    _unhide_line : NOT TESTED
+[] Ecouter le réseau via wireshark (wireshark est installé sur les deux VMs)
+
+
+
