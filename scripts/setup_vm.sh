@@ -48,9 +48,13 @@ build_seed_iso() {
 
     rm -rf "$WORK_DIR" && mkdir -p "$WORK_DIR"
 
+    local SSH_PUBKEY
+    SSH_PUBKEY="$(cat "$VM_DIR/wlkom_key.pub")"
+
     sed \
         -e "s/__VM_USER__/$VM_USER/g" \
         -e "s/__VM_PASS__/$VM_PASS/g" \
+        -e "s|__SSH_PUBKEY__|$SSH_PUBKEY|g" \
         "$CI_DIR/user-data" > "$WORK_DIR/user-data"
 
     sed \

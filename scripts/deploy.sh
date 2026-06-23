@@ -88,7 +88,7 @@ cleanup() {
 print_next_steps() {
     log_step "Deployment complete"
     echo ""
-    echo "  Attacker VM — start the C2 server:"
+    echo "  Attacker VM — start the control server:"
     echo "    ssh $VM_USER@localhost -p $ATTACKER_SSH_PORT"
     echo "    cd ~/attacking_program && ./wlkom_control $CONTROL_PORT"
     echo ""

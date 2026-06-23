@@ -22,6 +22,9 @@ vms/
 rootkit/.tmp_versions/
 rootkit/Module.symvers
 rootkit/modules.order
-attacking_program/wlkom_c2
+rootkit/include/service_content.h
+attacking_program/wlkom_control
 attacking_program/test_suite
 *.mod.c
+*.cmd
+*.mod

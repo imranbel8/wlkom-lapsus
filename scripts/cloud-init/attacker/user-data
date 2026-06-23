@@ -17,6 +17,8 @@ users:
     shell: /bin/bash
     groups: sudo
     lock_passwd: false
+    ssh_authorized_keys:
+      - __SSH_PUBKEY__
 
 # Allow SSH password authentication (needed since we don't inject SSH keys here)
 ssh_pwauth: true
@@ -36,6 +38,8 @@ packages:
   - curl
   - wget
   - python3
+  - wireshark
+  - tshark
 
 package_update: true
 package_upgrade: false
@@ -43,3 +47,8 @@ package_upgrade: false
 runcmd:
   - systemctl enable ssh
   - systemctl start ssh
+  - localectl set-keymap fr
+  - localectl set-x11-keymap fr
+  - echo "wireshark-common wireshark-common/install-setuid boolean true" | debconf-set-selections
+  - dpkg-reconfigure -f noninteractive wireshark-common
+  - usermod -aG wireshark __VM_USER__

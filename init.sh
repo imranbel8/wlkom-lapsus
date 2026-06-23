@@ -64,6 +64,15 @@ download_cloud_image() {
     log_ok "Cloud image downloaded: $CLOUD_BASE"
 }
 
+generate_ssh_key() {
+    local key="$VM_DIR/wlkom_key"
+    if [ ! -f "$key" ]; then
+        log_step "Generating SSH key pair for VM access"
+        ssh-keygen -t ed25519 -f "$key" -N "" -C "wlkom-vm-access" -q
+        log_ok "SSH key: $key"
+    fi
+}
+
 copy_scripts() {
     log_step "Copying launch scripts to vms/"
 
@@ -83,7 +92,7 @@ print_next_steps() {
     echo "  1. Start both VMs (attacker FIRST — it opens the socket):"
     echo "       $VM_DIR/start_vm.sh attacker"
     echo "       $VM_DIR/start_vm.sh victim"
-    echo "     Cloud-init configures each VM on first boot (~2 min)."
+    echo "     Cloud-init configures each VM on first boot (~1 min)."
     echo ""
     echo "  2. Deploy (compiles + loads rootkit):"
     echo "       $VM_DIR/deploy.sh"
@@ -99,6 +108,7 @@ main() {
     check_kvm
     install_deps
     download_cloud_image
+    generate_ssh_key
     bash "$ROOT_DIR/scripts/setup_vm.sh" attacker
     bash "$ROOT_DIR/scripts/setup_vm.sh" victim
     copy_scripts

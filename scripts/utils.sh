@@ -16,7 +16,8 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 log_step()  { echo -e "\n${BLUE}=== $1 ===${NC}"; }
 
 # SSH options used by deploy.sh and any script that SSHes into VMs
-SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=3"
+WLKOM_KEY="$ROOT_DIR/vms/wlkom_key"
+SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=3 -i $WLKOM_KEY"
 
 ssh_attacker() { ssh $SSH_OPTS -p "$ATTACKER_SSH_PORT" "$VM_USER@localhost" "$@"; }
 ssh_victim()   { ssh $SSH_OPTS -p "$VICTIM_SSH_PORT"   "$VM_USER@localhost" "$@"; }
