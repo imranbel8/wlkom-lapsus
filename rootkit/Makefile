@@ -3,6 +3,8 @@ wlkom-objs := src/main.o src/crypto.o src/protocol.o src/network.o src/commands.
 
 ccflags-y += -Wno-declaration-after-statement -I$(src)/include
 
+ccflags-y += -DCONFIG_X86_64
+
 KDIR := /lib/modules/$(shell uname -r)/build
 
 CONTROL_IP   ?= 192.168.100.10
