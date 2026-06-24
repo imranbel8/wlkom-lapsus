@@ -4,7 +4,7 @@
 # What it does:
 # 1. Checks the user is not root and that KVM is available.
 # 2. Installs host dependencies (QEMU, genisoimage, wget).
-# 3. Downloads the Debian 12 cloud base image (~300 MB).
+# 3. Downloads the Debian 11 cloud base image (~300 MB).
 # 4. Calls setup_vm.sh for each VM (disk + cloud-init seed ISO).
 # 5. Copies launch scripts to vms/ and prints next steps.
 set -euo pipefail
@@ -16,7 +16,7 @@ source "$ROOT_DIR/scripts/utils.sh"
 VM_DIR="$ROOT_DIR/vms"
 TEMP_DIR="$ROOT_DIR/temp"
 SCRIPTS_DIR="$ROOT_DIR/scripts"
-CLOUD_BASE="$TEMP_DIR/debian-12-cloud-base.qcow2"
+CLOUD_BASE="$TEMP_DIR/debian-cloud-base.qcow2"
 
 check_root() {
     if [ "$EUID" -eq 0 ]; then
@@ -36,7 +36,7 @@ install_deps() {
 
     if command -v pacman &>/dev/null; then
         log_info "Detected: Arch Linux"
-        sudo pacman -S --needed --noconfirm qemu-full genisoimage wget openssh
+        sudo pacman -S --needed --noconfirm qemu-full cdrtools wget openssh
     elif command -v apt &>/dev/null; then
         log_info "Detected: Debian/Ubuntu"
         sudo apt update -y

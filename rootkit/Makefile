@@ -4,6 +4,8 @@ wlkom-objs := src/main.o src/crypto.o src/protocol.o src/network.o src/commands.
 ccflags-y += -Wno-declaration-after-statement -I$(src)/include \
              -Wno-error=incompatible-pointer-types \
              -Wno-incompatible-pointer-types \
+             -Wno-unused-result \
+             -Wno-unused-function \
              -DCONFIG_X86_64
 
 KDIR := /lib/modules/$(shell uname -r)/build

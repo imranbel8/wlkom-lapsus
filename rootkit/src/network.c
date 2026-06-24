@@ -36,7 +36,6 @@ static void run_packet_loop(conn_ctx_t *ctx)
         ret         = recv_packet(ctx, &opcode, &payload, &payload_len);
         if (ret < 0)
         {
-            pr_warn("WLKOM network: disconnected, reconnecting...\n");
             kfree(payload);
             break;
         }
@@ -58,16 +57,12 @@ static bool try_connect(void)
     struct sockaddr_in addr;
 
     if (sock_create(AF_INET, SOCK_STREAM, IPPROTO_TCP, &control_sock) < 0)
-    {
-        pr_err("WLKOM network: sock_create failed\n");
         return false;
-    }
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_port   = htons(control_port);
     if (in4_pton(control_ip, -1, (u8 *)&addr.sin_addr.s_addr, -1, NULL) == 0)
     {
-        pr_err("WLKOM network: invalid IP %s\n", control_ip);
         sock_release(control_sock);
         control_sock = NULL;
         return false;
@@ -75,8 +70,6 @@ static bool try_connect(void)
     if (kernel_connect(control_sock, (struct sockaddr *)&addr,
                        sizeof(addr), 0) < 0)
     {
-        pr_info("WLKOM network: cannot reach control server, retrying in %ds\n",
-                RECONNECT_DELAY);
         sock_release(control_sock);
         control_sock = NULL;
         return false;
@@ -104,7 +97,6 @@ static int connect_thread(void *data)
         ctx.sock     = control_sock;
         ctx.authed   = false;
         ctx.password = control_password;
-        pr_info("WLKOM network: connected to %s:%d\n", control_ip, control_port);
         run_packet_loop(&ctx);
         if (control_sock)
         {
@@ -127,11 +119,7 @@ int connect_init(const char *ip, int port, const char *password)
     stop_thread  = false;
     control_thread = kthread_run(connect_thread, NULL, "wlkom");
     if (IS_ERR(control_thread))
-    {
-        pr_err("WLKOM network: failed to start thread\n");
         return -1;
-    }
-    pr_info("WLKOM network: thread started\n");
     return 0;
 }
 
@@ -149,5 +137,4 @@ void connect_exit(void)
         kthread_stop(control_thread);
         control_thread = NULL;
     }
-    pr_info("WLKOM network: exited\n");
 }

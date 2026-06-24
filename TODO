@@ -3,7 +3,7 @@ TODO List:
 [X] Automatisation du déploiement (init.sh, deploy.sh full/code)
 [X] Documentation (README racine, rootkit/README, attacking_program/README)
 
-[ ] Fonctionnalités — état actuel :
+[X] Fonctionnalités — état actuel :
 
     CONNEXION / AUTH
     [X] ping        : OK
@@ -20,16 +20,13 @@ TODO List:
 
     HIDING
     [X] hide_module : OK — module absent de lsmod et /proc/modules
-    [ ] hide_file   : KO — le hook syscall est installé (syscall_table patché via lookup_address)
-                          mais le filtrage échoue sur kernel 6.1 genericcloud-amd64 :
-                          CONFIG_ARCH_HAS_SYSCALL_WRAPPER place un pt_regs* dans le premier
-                          argument, le vrai pointeur dirent n'est pas encore extrait correctement.
-    [ ] unhide_file : NON TESTÉ
-    [ ] hide_line   : NON TESTÉ (même blocage que hide_file)
-    [ ] unhide_line : NON TESTÉ
+    [X] hide_file   : OK — hook getdents64 fonctionnel sur kernel 5.10 cloud-amd64
+                          (signature const struct pt_regs * correcte pour CONFIG_ARCH_HAS_SYSCALL_WRAPPER)
+    [X] unhide_file : OK — testé conjointement avec hide_file
+    [ ] hide_line   : NON ACTIVÉ — le hook read() est présent dans le code mais non installé
+                      dans la syscall table (trop risqué : déclenche sur chaque read() du système).
+                      À réactiver avec précaution et tests dédiés.
+    [ ] unhide_line : NON TESTÉ (bloqué par hide_line non activé)
 
     PERSISTANCE
     [X] persistence : OK — service systemd installé, rootkit rechargé au boot
-
-[ ] Problème ouvert : hide_file/hide_line sur image genericcloud (kernel 6.1.0-*-cloud-amd64)
-    Solution possible : changer DEBIAN_CLOUD_URL dans .env pour une image netinst standard.

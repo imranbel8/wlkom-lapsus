@@ -60,7 +60,7 @@ The two VMs share a QEMU socket-based virtual network — no Internet required.
 cd wlkom-lapsus/
 
 # 2. (Optional) edit .env to change IPs, ports, or credentials
-cat scripts/.env
+cat .env
 
 # 3. One-time setup (download image, generate SSH keys, create disks)
 bash init.sh
@@ -79,9 +79,9 @@ bash vms/deploy.sh code     # Recompile without restarting VMs
 
 ---
 
-## Configuration — `scripts/.env`
+## Configuration — `.env`
 
-All parameters live in `scripts/.env`. Every script sources it.
+All parameters live in `.env` at the project root. Every script sources it.
 
 ```bash
 ATTACKER_IP=192.168.100.10    # Attacker VM IP on the private network
@@ -107,7 +107,7 @@ Run this once on the host. It:
 1. Checks that KVM is available (`/dev/kvm`)
 2. Installs QEMU, `genisoimage`, `wget` if missing
 3. Generates an ED25519 SSH key pair at `vms/wlkom_key` + `vms/wlkom_key.pub`
-4. Downloads the Debian 12 genericcloud base image to `temp/` (~300 MB, shared & reused)
+4. Downloads the Debian 11 genericcloud base image to `temp/` (~300 MB, shared & reused)
 5. Creates `attacker.qcow2` and `victim.qcow2` as copy-on-write overlays in `vms/`
 6. Builds cloud-init seed ISOs from templates, substituting `.env` values and SSH keys
 
@@ -250,12 +250,81 @@ hide_file request sent: wlkom.ko
 
 ---
 
+## Testing hide_file manually
+
+After `bash vms/deploy.sh`, the rootkit is loaded and already hides itself.
+Open two terminals — one on the victim, one on the attacker.
+
+**Terminal A — Attacker VM (control server):**
+```bash
+ssh -i vms/wlkom_key -p 2222 wlkom@localhost
+cd ~/attacking_program && ./wlkom_control 4444
+# Password: wlk0m_s3cr3t
+```
+
+**Terminal B — Victim VM (observer):**
+```bash
+ssh -i vms/wlkom_key -p 2223 wlkom@localhost
+```
+
+### 1. Verify the rootkit hides itself at load time
+
+```bash
+# On victim — module must not appear
+lsmod | grep wlkom                        # empty
+
+# .ko hidden in kernel modules tree
+ls /lib/modules/$(uname -r)/extra/        # empty
+
+# systemd service hidden
+ls /etc/systemd/system/ | grep wlkom      # empty
+# (the service is active despite not appearing in ls)
+sudo systemctl status wlkom               # shows active — still tracked by systemd
+```
+
+### 2. Hide an arbitrary file
+
+```bash
+# On victim — create a test file
+touch /tmp/secret.txt
+ls /tmp/                                  # secret.txt is visible
+```
+
+```
+# On attacker control server
+WLKOM > hide_file secret.txt
+```
+
+```bash
+# On victim — file has disappeared from listing
+ls /tmp/                                  # secret.txt gone
+ls -la /tmp/                              # same — hook applies to all ls variants
+
+# The file still exists and is readable directly
+cat /tmp/secret.txt                       # works — only directory listing is blind
+stat /tmp/secret.txt                      # works
+```
+
+### 3. Restore the file
+
+```
+# On attacker control server
+WLKOM > unhide_file secret.txt
+```
+
+```bash
+# On victim
+ls /tmp/                                  # secret.txt is visible again
+```
+
+---
+
 ## VM setup — design decisions
 
-### Why Debian 12 + cloud images?
+### Why Debian 11 + cloud images?
 
 Debian's kernel does not enforce module signature verification without Secure Boot,
-so unsigned `.ko` files load without signing infrastructure. Kernel 6.1 LTS is used as the target (see `rootkit/README.md` for technical
+so unsigned `.ko` files load without signing infrastructure. Kernel 5.10 LTS is used as the target (see `rootkit/README.md` for technical
 details on kernel compatibility).
 
 Cloud images replace a traditional netinstall: no installer, no preseed file,
@@ -286,7 +355,9 @@ can race on first boot.
 ```
 wlkom-lapsus/
 ├── init.sh                  — first-time setup (run once on host)
+├── .env                     — all configuration (IPs, ports, credentials)
 ├── README.md
+├── TODO
 ├── AUTHORS
 ├── attacking_program/
 │   ├── README.md            — technical choices and design
@@ -300,7 +371,6 @@ wlkom-lapsus/
 │   ├── include/             — crypto.h, protocol.h, commands.h, network.h, hide.h, persist.h
 │   └── src/                 — main.c, crypto.c, protocol.c, commands.c, network.c, hide.c, persist.c
 └── scripts/
-    ├── .env                 — all configuration
     ├── utils.sh
     ├── setup_vm.sh
     ├── deploy.sh
