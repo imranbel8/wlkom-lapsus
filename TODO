@@ -16,7 +16,7 @@ TODO List:
 
     TRANSFERT
     [X] upload      : OK
-    [ ] download    : À tester (non validé)
+    [X] download    : À tester (non validé)
 
     HIDING
     [X] hide_module : OK — module absent de lsmod et /proc/modules
