@@ -156,16 +156,22 @@ static void exec_remote(client_t *c, const char *cmd)
 
 /**
  * @brief Interactive command loop: type commands, 'exit' to return to main menu.
+ *        Tracks the working directory so that 'cd' persists across commands.
  * @param c  Connected client.
  */
 static void exec_interactive_loop(client_t *c)
 {
     char line[CMD_LINE_SIZE];
+    char cwd[CMD_LINE_SIZE]  = "";
+    char full[CMD_LINE_SIZE * 2];
 
     printf("\nEntering command mode (type 'exit' to return to main menu)\n");
     while (1)
     {
-        printf("\nexec > ");
+        if (cwd[0])
+            printf("\nexec [%s] > ", cwd);
+        else
+            printf("\nexec > ");
         fflush(stdout);
         if (!fgets(line, sizeof(line), stdin))
             break;
@@ -174,7 +180,53 @@ static void exec_interactive_loop(client_t *c)
             continue;
         if (strcmp(line, "exit") == 0)
             break;
-        exec_remote(c, line);
+
+        /* Handle cd: send "cd <arg> && pwd" and update tracked cwd */
+        if (strncmp(line, "cd", 2) == 0 && (line[2] == ' ' || line[2] == '\0'))
+        {
+            uint8_t  op;
+            char    *resp     = NULL;
+            uint32_t resp_len = 0;
+            char     pwd_cmd[CMD_LINE_SIZE * 2];
+
+            if (cwd[0])
+                snprintf(pwd_cmd, sizeof(pwd_cmd), "cd %s && %s && pwd", cwd, line);
+            else
+                snprintf(pwd_cmd, sizeof(pwd_cmd), "%s && pwd", line);
+
+            send_packet(c->fd, CMD_EXEC, pwd_cmd, strlen(pwd_cmd));
+            if (recv_packet(c->fd, &op, &resp, &resp_len) == 0 && resp && resp_len > 0)
+            {
+                /* strip trailing newlines so the last line is findable */
+                char *end = resp + (int)resp_len - 1;
+                while (end > resp && (*end == '\n' || *end == '\r'))
+                    *end-- = '\0';
+                /* last line = pwd output */
+                char *nl  = strrchr(resp, '\n');
+                char *dir = nl ? nl + 1 : resp;
+                if (dir[0] == '/')
+                {
+                    snprintf(cwd, sizeof(cwd), "%s", dir);
+                    /* print everything before the pwd line */
+                    if (nl)
+                        printf("%.*s\n", (int)(nl - resp), resp);
+                }
+                else
+                {
+                    printf("%s\n", resp);
+                }
+            }
+            free(resp);
+            continue;
+        }
+
+        /* Prefix all other commands with cd to current tracked dir */
+        if (cwd[0])
+            snprintf(full, sizeof(full), "cd %s && %s", cwd, line);
+        else
+            snprintf(full, sizeof(full), "%s", line);
+
+        exec_remote(c, full);
     }
     printf("\nReturned to main menu\n");
 }
@@ -231,6 +283,17 @@ static void dispatch_upload(client_t *c, char **args, int argc)
     }
     expand_tilde(args[1], local_path, sizeof(local_path));
     expand_tilde(args[2], remote_path, sizeof(remote_path));
+
+    /* If remote path ends with '/', append the local basename */
+    size_t rlen = strlen(remote_path);
+    if (rlen > 0 && remote_path[rlen - 1] == '/')
+    {
+        const char *base = strrchr(local_path, '/');
+        base = base ? base + 1 : local_path;
+        size_t rem = sizeof(remote_path) - rlen;
+        memcpy(remote_path + rlen, base, rem > strlen(base) ? strlen(base) + 1 : rem - 1);
+        remote_path[sizeof(remote_path) - 1] = '\0';
+    }
 
     file_data = read_file(local_path, &file_len);
     if (!file_data)

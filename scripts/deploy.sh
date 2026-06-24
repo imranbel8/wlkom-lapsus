@@ -32,8 +32,8 @@ deploy_rootkit() {
     ssh_victim "rm -rf ~/rootkit" 2>/dev/null || true
     scp_to_victim -r "$ROOT_DIR/rootkit" "$VM_USER@localhost:~/"
 
-    log_info "Waiting for package manager to be free (up to 2 min)..."
-    ssh_victim "for i in {1..60}; do sudo apt-get update -qq >/dev/null 2>&1 && break; sleep 2; done" || true
+    log_info "Waiting for package manager to be free (up to 3 min)..."
+    ssh_victim "for i in \$(seq 1 90); do sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break; sleep 2; done" || true
     ssh_victim "sudo dpkg --configure -a 2>/dev/null || true" || true
 
     log_info "Installing kernel headers..."

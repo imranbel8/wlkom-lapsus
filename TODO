@@ -1,42 +1,35 @@
-TODO List (Reste à faire):
+TODO List:
 
-[] Améliorer le script de lancement et faire plus d'automatisation.
-[] Documenter un peu mieux ?
-[] Tester les fonctionnalités et les rendre plus robustes:
-    _auth and connect : OK
-    _exec : OK : Need to update for the shity cat that does not work.
-    _download : KO
-    _ping : OK
-    _help: OK
-    _exit: Closes the connection but do not end process. OK
-    _upload : NOT TESTED 
-    _download : KO
-    _hide_file : KO
-    _unhide_file : NOT TESTED
-    _hide_line : NOT TESTED
-    _unhide_line : NOT TESTED
-[] Ecouter le réseau via wireshark (wireshark est installé sur les deux VMs)
-[] Faire des screenshots de l'utilisation du rootkit. (désactiver les fenêtres QEMU), voir pour corriger les erreurs :
+[X] Automatisation du déploiement (init.sh, deploy.sh full/code)
+[X] Documentation (README racine, rootkit/README, attacking_program/README)
 
-Some features are non-negotiable to implement. They will be marked as mandatory. If you imple-
-ment all mandatory features, you will get the grade to validate the project.
-The mandatory features will give you some amount of points:
-•Compile: 0.5 point : ok
-•Connection: 3 points ok
-•Persistence: 1.5 points ok
-•Executing commands: 5 points (must work perfectly). ok
+[ ] Fonctionnalités — état actuel :
 
+    CONNEXION / AUTH
+    [X] ping        : OK
+    [X] auth        : OK
+    [X] exit        : OK
+    [X] help        : OK
 
-5.3 The other ones
-The next features will give you some amount of points:
-•Password: 1 point OK
-•Upload: 1.5 points OK
-•Download: 1.5 points OK
-•Hide the rootkit from the module list: 1 point
-•Hide a line from a file in userland: 2 point
-•Hide a directory / files from userland: 2 point
-•Cipher the data on the network: 1 point
+    EXÉCUTION
+    [X] exec        : OK — mode one-shot et mode interactif avec suivi du répertoire courant (cd persistant)
 
+    TRANSFERT
+    [X] upload      : OK
+    [ ] download    : À tester (non validé)
 
+    HIDING
+    [X] hide_module : OK — module absent de lsmod et /proc/modules
+    [ ] hide_file   : KO — le hook syscall est installé (syscall_table patché via lookup_address)
+                          mais le filtrage échoue sur kernel 6.1 genericcloud-amd64 :
+                          CONFIG_ARCH_HAS_SYSCALL_WRAPPER place un pt_regs* dans le premier
+                          argument, le vrai pointeur dirent n'est pas encore extrait correctement.
+    [ ] unhide_file : NON TESTÉ
+    [ ] hide_line   : NON TESTÉ (même blocage que hide_file)
+    [ ] unhide_line : NON TESTÉ
 
+    PERSISTANCE
+    [X] persistence : OK — service systemd installé, rootkit rechargé au boot
 
+[ ] Problème ouvert : hide_file/hide_line sur image genericcloud (kernel 6.1.0-*-cloud-amd64)
+    Solution possible : changer DEBIAN_CLOUD_URL dans .env pour une image netinst standard.

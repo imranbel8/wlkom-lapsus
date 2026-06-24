@@ -36,8 +36,6 @@ packages:
   - python3
   - wireshark
   - tshark
-  - kbd
-  - console-setup
 
 package_update: true
 package_upgrade: false

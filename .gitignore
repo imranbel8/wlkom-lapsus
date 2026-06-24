@@ -23,7 +23,6 @@ rootkit/.tmp_versions/
 temp/*
 rootkit/Module.symvers
 rootkit/modules.order
-rootkit/include/service_content.h
 attacking_program/wlkom_control
 attacking_program/test_suite
 *.mod.c

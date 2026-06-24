@@ -208,24 +208,24 @@ root:x:0:0:root:/root:/bin/bash
 ...
 ```
 
-**Interactive command loop (type `exec` alone):**
+**Interactive command loop (type `exec` alone) — `cd` persists across commands:**
 
 ```
 WLKOM > exec
 Entering command mode (type 'exit' to return to main menu)
 
 exec > ls
-bin boot dev etc home lib lib64 lost+found media mnt opt proc root run sbin srv sys tmp usr var
+bin boot dev etc home lib ...
 
-exec > cat test.txt
-Hello, WLKOM!
+exec > cd /tmp
+exec [/tmp] > ls
+.wlkom_out
 
-exec > echo "append me" >> test.txt
-exec > cat test.txt
-Hello, WLKOM!
-append me
+exec [/tmp] > cd /home/wlkom
+exec [/home/wlkom] > cat secret.txt
+flag{...}
 
-exec > exit
+exec [/home/wlkom] > exit
 Returned to main menu
 
 WLKOM > ping
@@ -255,9 +255,8 @@ hide_file request sent: wlkom.ko
 ### Why Debian 12 + cloud images?
 
 Debian's kernel does not enforce module signature verification without Secure Boot,
-so unsigned `.ko` files load without signing infrastructure. Kernel 6.1 LTS is the
-most recent version where all rootkit techniques work reliably (see
-`rootkit/README.md` for details).
+so unsigned `.ko` files load without signing infrastructure. Kernel 6.1 LTS is used as the target (see `rootkit/README.md` for technical
+details on kernel compatibility).
 
 Cloud images replace a traditional netinstall: no installer, no preseed file,
 ~2 min to a ready VM instead of 15–20 min.

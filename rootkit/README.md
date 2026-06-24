@@ -67,7 +67,6 @@ typedef struct {
     struct socket *sock;
     bool           authed;
 } conn_ctx_t;
-} conn_ctx_t;
 ```
 
 A single pointer carries both the socket and the authentication flag. All
@@ -99,11 +98,18 @@ any dependency on a custom kernel build or debug symbols.
 
 ### Syscall table write protection
 
-Hooking `getdents64`, `getdents`, and `read` requires writing to `sys_call_table`,
-which is write-protected via the CR0 WP (Write Protect) bit. `hide.c` disables WP
-briefly with `write_cr0(read_cr0() & ~0x10000UL)`, replaces the pointer, and
-re-enables WP. The window is a handful of instructions; interrupts remain enabled
-during this time (acceptable in this pedagogical context).
+Hooking `getdents64` and `read` requires writing to `sys_call_table`, which is
+mapped read-only. `hide.c` uses `lookup_address` to find the PTE (Page Table Entry)
+covering the table, sets the `_PAGE_RW` bit to make the page writable, replaces the
+pointer, then clears the bit again. This is more surgical than toggling the CR0 WP
+bit: it only unlocks the one physical page containing the table rather than disabling
+write protection globally.
+
+On kernel 6.1 with `CONFIG_ARCH_HAS_SYSCALL_WRAPPER=y` (Debian genericcloud image),
+the table entries point to `__x64_sys_*` wrappers that receive a `const struct pt_regs *`
+as their sole argument. The hook functions must extract the real userspace pointer
+(`dirent`, `buf`) from `inner_regs->si` when the first argument looks like a kernel
+address (> 0xffff000000000000).
 
 ### Module hiding
 
