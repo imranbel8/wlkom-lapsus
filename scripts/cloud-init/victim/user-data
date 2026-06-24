@@ -4,12 +4,8 @@
 
 hostname: wlkom-victim
 
-locale: fr_FR.UTF-8
-timezone: Europe/Paris
-
-keyboard:
-  layout: fr
-  variant: ""
+locale: en_US.UTF-8
+timezone: UTC
 
 users:
   - name: __VM_USER__
@@ -48,10 +44,6 @@ package_upgrade: false
 runcmd:
   - systemctl enable ssh
   - systemctl start ssh
-  - echo 'keyboard-configuration keyboard-configuration/layoutcode string fr' | debconf-set-selections
-  - echo 'keyboard-configuration keyboard-configuration/modelcode string pc105' | debconf-set-selections
-  - DEBIAN_FRONTEND=noninteractive dpkg-reconfigure keyboard-configuration
-  - setupcon --force || true
   - echo "wireshark-common wireshark-common/install-setuid boolean true" | debconf-set-selections
   - dpkg-reconfigure -f noninteractive wireshark-common
   - usermod -aG wireshark __VM_USER__

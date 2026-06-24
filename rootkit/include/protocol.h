@@ -6,8 +6,6 @@
 
 #include "crypto.h"
 
-#define WLKOM_PASSWORD  "wlk0m_s3cr3t"
-
 #define CMD_AUTH        0x01
 #define CMD_EXEC        0x02
 #define CMD_UPLOAD      0x03
@@ -24,6 +22,7 @@ typedef struct
 {
     struct socket *sock;
     bool           authed;
+    const char    *password;
 } conn_ctx_t;
 
 /**

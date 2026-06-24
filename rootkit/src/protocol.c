@@ -70,10 +70,12 @@ int recv_packet(conn_ctx_t *ctx, uint8_t *opcode, char **payload,
                 uint32_t *len)
 {
     struct packet_hdr hdr;
+    int              ret;
 
     if (!ctx || !ctx->sock)
         return -1;
-    if (sock_recv(ctx->sock, &hdr, sizeof(hdr)) < 0)
+    ret = sock_recv(ctx->sock, &hdr, sizeof(hdr));
+    if (ret <= 0)
         return -1;
     *opcode = hdr.opcode;
     *len    = ntohl(hdr.length);
@@ -85,7 +87,8 @@ int recv_packet(conn_ctx_t *ctx, uint8_t *opcode, char **payload,
     *payload = kmalloc(*len + 1, GFP_KERNEL);
     if (!*payload)
         return -1;
-    if (sock_recv(ctx->sock, *payload, *len) < 0)
+    ret = sock_recv(ctx->sock, *payload, *len);
+    if (ret <= 0)
     {
         kfree(*payload);
         *payload = NULL;

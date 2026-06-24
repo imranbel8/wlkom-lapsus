@@ -11,11 +11,12 @@
 
 #include "commands.h"
 
-static struct socket      *control_sock   = NULL;
-static struct task_struct *control_thread = NULL;
+static struct socket      *control_sock     = NULL;
+static struct task_struct *control_thread   = NULL;
 static char                control_ip[64];
 static int                 control_port;
-static bool                stop_thread    = false;
+static char                control_password[128];
+static bool                stop_thread      = false;
 
 /**
  * @brief Receives and dispatches packets until disconnect or stop.
@@ -100,8 +101,9 @@ static int connect_thread(void *data)
             ssleep(RECONNECT_DELAY);
             continue;
         }
-        ctx.sock   = control_sock;
-        ctx.authed = false;
+        ctx.sock     = control_sock;
+        ctx.authed   = false;
+        ctx.password = control_password;
         pr_info("WLKOM network: connected to %s:%d\n", control_ip, control_port);
         run_packet_loop(&ctx);
         if (control_sock)
@@ -117,9 +119,10 @@ static int connect_thread(void *data)
     return 0;
 }
 
-int connect_init(const char *ip, int port)
+int connect_init(const char *ip, int port, const char *password)
 {
     strncpy(control_ip, ip, sizeof(control_ip) - 1);
+    strncpy(control_password, password, sizeof(control_password) - 1);
     control_port = port;
     stop_thread  = false;
     control_thread = kthread_run(connect_thread, NULL, "wlkom");

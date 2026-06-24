@@ -14,8 +14,9 @@ source "$ROOT_DIR/.env"
 source "$ROOT_DIR/scripts/utils.sh"
 
 VM_DIR="$ROOT_DIR/vms"
+TEMP_DIR="$ROOT_DIR/temp"
 SCRIPTS_DIR="$ROOT_DIR/scripts"
-CLOUD_BASE="$VM_DIR/debian-12-cloud-base.qcow2"
+CLOUD_BASE="$TEMP_DIR/debian-12-cloud-base.qcow2"
 
 check_root() {
     if [ "$EUID" -eq 0 ]; then
@@ -51,21 +52,22 @@ install_deps() {
 download_cloud_image() {
     log_step "Downloading Debian 12 cloud base image"
 
-    mkdir -p "$VM_DIR"
+    mkdir -p "$TEMP_DIR"
 
     if [ -f "$CLOUD_BASE" ]; then
-        log_warn "Cloud image already present: $CLOUD_BASE"
-        read -rp "  Re-download? [y/N] " choice
-        [[ "$choice" =~ ^[Yy]$ ]] || return
+        log_ok "Cloud image already present: $CLOUD_BASE (skipping)"
+    else
+        log_info "Downloading $DEBIAN_CLOUD_URL ..."
+        wget -q --show-progress "$DEBIAN_CLOUD_URL" -O "$CLOUD_BASE"
+        log_ok "Cloud image downloaded: $CLOUD_BASE"
     fi
-
-    log_info "Downloading $DEBIAN_CLOUD_URL ..."
-    wget -q --show-progress "$DEBIAN_CLOUD_URL" -O "$CLOUD_BASE"
-    log_ok "Cloud image downloaded: $CLOUD_BASE"
 }
 
 generate_ssh_key() {
     local key="$VM_DIR/wlkom_key"
+
+    mkdir -p "$VM_DIR"
+
     if [ ! -f "$key" ]; then
         log_step "Generating SSH key pair for VM access"
         ssh-keygen -t ed25519 -f "$key" -N "" -C "wlkom-vm-access" -q
@@ -87,19 +89,20 @@ copy_scripts() {
 }
 
 print_next_steps() {
-    log_step "Init complete — next steps"
+    log_step "Init complete — ready to deploy"
     echo ""
-    echo "  1. Start both VMs (attacker FIRST — it opens the socket):"
-    echo "       $VM_DIR/start_vm.sh attacker"
-    echo "       $VM_DIR/start_vm.sh victim"
-    echo "     Cloud-init configures each VM on first boot (~1 min)."
+    echo "  1. Run deployment (starts VMs, waits for cloud-init, compiles + loads rootkit):"
+    echo "     $VM_DIR/deploy.sh"
     echo ""
-    echo "  2. Deploy (compiles + loads rootkit):"
-    echo "       $VM_DIR/deploy.sh"
+    echo "  2. After deploy completes, SSH to attacker and start the control server:"
+    echo "     ssh -i $VM_DIR/wlkom_key $VM_USER@localhost -p $ATTACKER_SSH_PORT"
+    echo "     cd attacking_program && ./wlkom_control $CONTROL_PORT"
+    echo "     (Password: wlk0m_s3cr3t)"
     echo ""
-    echo "  Credentials: $VM_USER / $VM_PASS"
-    echo "  Attacker SSH: ssh $VM_USER@localhost -p $ATTACKER_SSH_PORT"
-    echo "  Victim  SSH: ssh $VM_USER@localhost -p $VICTIM_SSH_PORT"
+    echo "  SSH shortcuts:"
+    echo "    Attacker: ssh -i $VM_DIR/wlkom_key $VM_USER@localhost -p $ATTACKER_SSH_PORT"
+    echo "    Victim:   ssh -i $VM_DIR/wlkom_key $VM_USER@localhost -p $VICTIM_SSH_PORT"
+    echo "    Creds:    $VM_USER / $VM_PASS"
     echo ""
 }
 

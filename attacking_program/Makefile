@@ -1,4 +1,4 @@
-CC      ?= cc
+CC      = gcc
 CFLAGS  = -std=c99 -pedantic -Werror -Wall -Wextra -Wvla -O2
 LDLIBS  = -lcriterion
 

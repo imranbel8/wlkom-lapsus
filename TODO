@@ -2,20 +2,41 @@ TODO List (Reste à faire):
 
 [] Améliorer le script de lancement et faire plus d'automatisation.
 [] Documenter un peu mieux ?
-[] Tester les fonctionnalités :
+[] Tester les fonctionnalités et les rendre plus robustes:
     _auth and connect : OK
-    _exec : OK
+    _exec : OK : Need to update for the shity cat that does not work.
     _download : KO
     _ping : OK
     _help: OK
-    _exit: Closes the connection but do not end process. 
-    _upload : NOT TESTED
-    _download : NOT TESTED
-    _hide_file : NOT TESTED
+    _exit: Closes the connection but do not end process. OK
+    _upload : NOT TESTED 
+    _download : KO
+    _hide_file : KO
     _unhide_file : NOT TESTED
     _hide_line : NOT TESTED
     _unhide_line : NOT TESTED
 [] Ecouter le réseau via wireshark (wireshark est installé sur les deux VMs)
+[] Faire des screenshots de l'utilisation du rootkit. (désactiver les fenêtres QEMU), voir pour corriger les erreurs :
+
+Some features are non-negotiable to implement. They will be marked as mandatory. If you imple-
+ment all mandatory features, you will get the grade to validate the project.
+The mandatory features will give you some amount of points:
+•Compile: 0.5 point : ok
+•Connection: 3 points ok
+•Persistence: 1.5 points ok
+•Executing commands: 5 points (must work perfectly). ok
+
+
+5.3 The other ones
+The next features will give you some amount of points:
+•Password: 1 point OK
+•Upload: 1.5 points OK
+•Download: 1.5 points OK
+•Hide the rootkit from the module list: 1 point
+•Hide a line from a file in userland: 2 point
+•Hide a directory / files from userland: 2 point
+•Cipher the data on the network: 1 point
+
 
 
 

